@@ -6,12 +6,18 @@ injection, surveillance) et la **localisation** des patients sur une carte.
 
 ## ✨ Fonctionnalités
 
-- **📊 Tableau de bord** — statistiques, interventions du jour, actions rapides (Effectué / Annulé).
-- **👥 Patients** — ajout, recherche, modification, suppression ; coordonnées, mutuelle,
+- **📊 Tableau de bord** — statistiques du jour, interventions du jour, actions rapides (Effectué / Annulé).
+- **👥 Patients** — ajout, recherche, modification, suppression ; coordonnées, **NISS**, mutuelle,
   allergies, médicaments, notes ; historique des interventions.
-- **📅 Agenda** — planification des interventions par date, type et statut ; suivi du statut.
+- **📅 Agenda** — planification des interventions par date, type et statut ; **récurrence hebdomadaire**
+  (répéter une visite sur N semaines) ; suivi du statut.
+- **💶 Facturation** — récapitulatif mensuel des interventions par patient (par type),
+  avec NISS et mutuelle, **export CSV/Excel** prêt pour la mutuelle.
 - **🗺️ Localisation** — carte interactive (Leaflet/OpenStreetMap) centrée sur La Louvière,
-  avec géocodage automatique des adresses (Nominatim, sans clé API).
+  avec géocodage automatique des adresses (Nominatim, sans clé API) ; patients à visiter
+  aujourd'hui en vert.
+- **💾 Sauvegarde** — création d'une sauvegarde horodatée de la base, téléchargement et
+  restauration depuis un fichier.
 
 ## 📁 Structure
 
@@ -50,7 +56,15 @@ Nurse planer/
 - Pour géocoder une adresse, utilisez l'onglet **Localisation** → « Géocoder l'adresse ».
   Le géocodage utilise OpenStreetMap (Nominatim) et nécessite une connexion internet.
 
+## 💾 Sauvegarde & restauration
+
+- Dans la barre latérale, **« 💾 Créer une sauvegarde »** copie la base dans
+  `data/infirmiere_backup_<date>.db` et propose le téléchargement.
+- **« ♻️ Restaurer une sauvegarde »** permet de réimporter un fichier `.db` de sauvegarde.
+
 ## 📝 Notes
 
 - Les données sont stockées localement dans `data/infirmiere.db` (aucun serveur distant).
+- **RGPD** : les données de santé sont sensibles. Pensez à sauvegarder régulièrement
+  (barre latérale) et à ne partager le fichier de base qu'avec précaution.
 - Pour repartir de zéro, supprimez simplement le fichier `data/infirmiere.db`.

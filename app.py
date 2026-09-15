@@ -6,9 +6,12 @@ Lancement :
     streamlit run app.py
 """
 
+import os
+import tempfile
+
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import database as db
 
@@ -82,8 +85,8 @@ def page_dashboard():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("👥 Patients", s["total_patients"])
     c2.metric("📅 Interventions du jour", s["du_jour"])
-    c3.metric("✅ Effectuées", s["effectuees"])
-    c4.metric("🕒 Planifiées", s["planifiees"])
+    c3.metric("✅ Effectuées aujourd'hui", s["effectuees_jour"])
+    c4.metric("🕒 Planifiées aujourd'hui", s["planifiees_jour"])
 
     st.divider()
 
@@ -164,6 +167,11 @@ def _patient_form(existing=None, key_prefix="new"):
         email = c9.text_input("Email", value=existing["email"] if existing else "")
         mutuelle = c10.text_input("Mutuelle", value=existing["mutuelle"] if existing else "",
                                   placeholder="Solidaris, CM, ...")
+        niss = st.text_input(
+            "NISS (n° sécurité sociale)",
+            value=existing["niss"] if existing else "",
+            placeholder="11 chiffres — requis pour la facturation",
+        )
 
         st.markdown("**Informations médicales**")
         allergies = st.text_area("Allergies", value=existing["allergies"] if existing else "")
@@ -180,12 +188,16 @@ def _patient_form(existing=None, key_prefix="new"):
         if not prenom.strip() or not nom.strip():
             st.error("Le prénom et le nom sont obligatoires.")
             return None
+        niss_clean = niss.replace(" ", "")
+        if niss_clean and not (niss_clean.isdigit() and len(niss_clean) == 11):
+            st.warning("⚠️ Le NISS doit contenir 11 chiffres (vérifiez avant de facturer).")
 
         return {
             "nom": nom.strip(),
             "prenom": prenom.strip(),
             "date_naissance": date_naissance.isoformat() if date_naissance else "",
             "sexe": sexe,
+            "niss": niss_clean,
             "adresse": adresse.strip(),
             "cp": cp.strip(),
             "commune": commune.strip(),
@@ -216,6 +228,12 @@ def page_patients():
             or q in (p["commune"] or "").lower() or q in (p["telephone"] or "").lower()
         ]
 
+    # Bouton « Nouveau patient » toujours disponible
+    if st.button("➕ Nouveau patient", key="btn_new_patient", type="primary"):
+        st.session_state["patient_new"] = True
+        st.session_state.pop("selected_patient", None)
+        st.rerun()
+
     left, right = st.columns([2, 3])
 
     with left:
@@ -227,63 +245,76 @@ def page_patients():
             label = f"{p['prenom']} {p['nom']}" + (f" ({age} ans)" if age else "")
             if st.button(label, key=f"sel_{p['id']}", width="stretch"):
                 st.session_state["selected_patient"] = p["id"]
+                st.session_state.pop("patient_new", None)
+                st.rerun()
 
     with right:
-        selected_id = st.session_state.get("selected_patient")
-        if selected_id:
-            p = db.get_patient(selected_id)
-            if p:
-                st.markdown(f"### {p['prenom']} {p['nom']}")
-                age = age_from_date(p["date_naissance"])
-                if age:
-                    st.caption(f"{age} ans · {p['sexe'] or '—'}")
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**📍 Adresse**\n{p['adresse'] or '—'}  \n{p['cp'] or ''} {p['commune'] or ''}")
-                    st.markdown(f"**📞 Téléphone**\n{p['telephone'] or '—'}")
-                with c2:
-                    st.markdown(f"**📧 Email**\n{p['email'] or '—'}")
-                    st.markdown(f"**🏥 Mutuelle**\n{p['mutuelle'] or '—'}")
-
-                st.markdown(f"**⚠️ Allergies** : {p['allergies'] or 'Aucune'}")
-                st.markdown(f"**💊 Médicaments** : {p['medicaments'] or 'Aucun'}")
-                if p["notes"]:
-                    st.markdown(f"**📝 Notes** : {p['notes']}")
-
-                # Interventions du patient
-                st.divider()
-                st.markdown("**📅 Interventions**")
-                interventions = db.list_interventions(patient_id=p["id"])
-                if interventions:
-                    df = pd.DataFrame(interventions)
-                    df = df[["date", "heure", "type", "statut", "lieu", "notes"]]
-                    df.columns = ["Date", "Heure", "Type", "Statut", "Lieu", "Notes"]
-                    st.dataframe(df, width="stretch", hide_index=True)
-                else:
-                    st.info("Aucune intervention enregistrée.")
-
-                st.divider()
-                with st.expander("✏️ Modifier le patient"):
-                    data = _patient_form(existing=p, key_prefix=f"edit_{p['id']}")
-                    if data:
-                        db.update_patient(p["id"], data)
-                        st.success("Patient mis à jour.")
-                        st.rerun()
-
-                if st.button("🗑️ Supprimer ce patient", key=f"del_{p['id']}"):
-                    db.delete_patient(p["id"])
-                    st.session_state.pop("selected_patient", None)
-                    st.success("Patient supprimé.")
-                    st.rerun()
-        else:
+        if st.session_state.get("patient_new"):
             st.markdown("**➕ Nouveau patient**")
             data = _patient_form(key_prefix="new")
             if data:
                 new_id = db.add_patient(data)
                 st.session_state["selected_patient"] = new_id
+                st.session_state.pop("patient_new", None)
                 st.success("Patient ajouté.")
                 st.rerun()
+            if st.button("← Annuler", key="cancel_new_patient"):
+                st.session_state.pop("patient_new", None)
+                st.rerun()
+        else:
+            selected_id = st.session_state.get("selected_patient")
+            if selected_id:
+                p = db.get_patient(selected_id)
+                if not p:
+                    st.session_state.pop("selected_patient", None)
+                    st.info("Patient introuvable.")
+                else:
+                    st.markdown(f"### {p['prenom']} {p['nom']}")
+                    age = age_from_date(p["date_naissance"])
+                    if age:
+                        st.caption(f"{age} ans · {p['sexe'] or '—'}")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"**📍 Adresse**\n{p['adresse'] or '—'}  \n{p['cp'] or ''} {p['commune'] or ''}")
+                        st.markdown(f"**📞 Téléphone**\n{p['telephone'] or '—'}")
+                    with c2:
+                        st.markdown(f"**📧 Email**\n{p['email'] or '—'}")
+                        st.markdown(f"**🏥 Mutuelle**\n{p['mutuelle'] or '—'}")
+                        st.markdown(f"**🔢 NISS**\n{p['niss'] or '—'}")
+
+                    st.markdown(f"**⚠️ Allergies** : {p['allergies'] or 'Aucune'}")
+                    st.markdown(f"**💊 Médicaments** : {p['medicaments'] or 'Aucun'}")
+                    if p["notes"]:
+                        st.markdown(f"**📝 Notes** : {p['notes']}")
+
+                    # Interventions du patient
+                    st.divider()
+                    st.markdown("**📅 Interventions**")
+                    interventions = db.list_interventions(patient_id=p["id"])
+                    if interventions:
+                        df = pd.DataFrame(interventions)
+                        df = df[["date", "heure", "type", "statut", "lieu", "notes"]]
+                        df.columns = ["Date", "Heure", "Type", "Statut", "Lieu", "Notes"]
+                        st.dataframe(df, width="stretch", hide_index=True)
+                    else:
+                        st.info("Aucune intervention enregistrée.")
+
+                    st.divider()
+                    with st.expander("✏️ Modifier le patient"):
+                        data = _patient_form(existing=p, key_prefix=f"edit_{p['id']}")
+                        if data:
+                            db.update_patient(p["id"], data)
+                            st.success("Patient mis à jour.")
+                            st.rerun()
+
+                    if st.button("🗑️ Supprimer ce patient", key=f"del_{p['id']}"):
+                        db.delete_patient(p["id"])
+                        st.session_state.pop("selected_patient", None)
+                        st.success("Patient supprimé.")
+                        st.rerun()
+            else:
+                st.info("Sélectionnez un patient à gauche, ou cliquez sur « ➕ Nouveau patient ».")
 
 
 # ---------------------------------------------------------------------------
@@ -346,18 +377,30 @@ def page_agenda():
         with c4:
             lieu = st.text_input("Lieu", value="Domicile")
         notes = st.text_input("Notes", placeholder="Détails du soin, observations...")
+        repeat_weeks = st.number_input(
+            "🔁 Répéter sur les N prochaines semaines (0 = une seule fois)",
+            min_value=0, max_value=52, value=0, step=1,
+            help="Crée la même visite le même jour de la semaine, sur les N semaines suivantes.",
+        )
         if st.form_submit_button("📌 Ajouter à l'agenda", width="stretch"):
-            db.add_intervention({
-                "patient_id": patient_id,
-                "type": typ,
-                "date": idate.isoformat(),
-                "heure": heure.strftime("%H:%M"),
-                "duree_min": int(duree),
-                "statut": "Planifié",
-                "lieu": lieu.strip(),
-                "notes": notes.strip(),
-            })
-            st.success("Intervention planifiée.")
+            created = 0
+            for w in range(int(repeat_weeks) + 1):
+                d = idate + timedelta(weeks=w)
+                db.add_intervention({
+                    "patient_id": patient_id,
+                    "type": typ,
+                    "date": d.isoformat(),
+                    "heure": heure.strftime("%H:%M"),
+                    "duree_min": int(duree),
+                    "statut": "Planifié",
+                    "lieu": lieu.strip(),
+                    "notes": notes.strip(),
+                })
+                created += 1
+            if created == 1:
+                st.success("Intervention planifiée.")
+            else:
+                st.success(f"{created} interventions planifiées (récurrence hebdomadaire).")
             st.rerun()
 
     # Gestion des statuts
@@ -460,21 +503,20 @@ def page_map():
             icon=folium.Icon(color="green", icon="briefcase", prefix="fa"),
         ).add_to(m)
 
+        today_iso = date.today().isoformat()
         for p in with_coords:
-            color = "red"
-            # Couleur selon le type d'intervention du jour
-            interventions = db.list_interventions(patient_id=p["id"], date=date.today().isoformat())
-            if interventions:
-                typ = interventions[0]["type"]
-                color = {
-                    "Soins": "blue", "Toilette": "lightblue", "Pansement": "orange",
-                    "Prise de sang": "red", "Injection": "purple", "Surveillance": "green",
-                }.get(typ, "red")
+            interventions = db.list_interventions(patient_id=p["id"], date=today_iso)
+            active = [i for i in interventions if i["statut"] != "Annulé"]
+            # Vert si visite prévue aujourd'hui, gris sinon
+            color = "green" if active else "gray"
             popup = (
                 f"<b>{p['prenom']} {p['nom']}</b><br>"
                 f"{p['adresse'] or ''} {p['cp'] or ''} {p['commune'] or ''}<br>"
                 f"📞 {p['telephone'] or '—'}"
             )
+            if active:
+                visits = " · ".join(f"{i['heure'] or ''} {i['type']}" for i in active)
+                popup += f"<br>📅 Aujourd'hui : {visits}"
             folium.Marker(
                 location=[p["lat"], p["lng"]],
                 popup=folium.Popup(popup, max_width=250),
@@ -488,6 +530,60 @@ def page_map():
 
 
 # ---------------------------------------------------------------------------
+# Page : Facturation (récapitulatif mensuel)
+# ---------------------------------------------------------------------------
+def page_facturation():
+    st.title("💶 Facturation")
+    st.caption("Récapitulatif des interventions par patient et par mois — prêt pour la mutuelle")
+
+    now = datetime.now()
+    mois_noms = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                 "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+    f1, f2 = st.columns([1, 1])
+    with f1:
+        year = int(f1.number_input("Année", min_value=2020, max_value=2100, value=now.year, step=1))
+    with f2:
+        month = int(f2.selectbox("Mois", list(range(1, 13)), index=now.month - 1,
+                                 format_func=lambda m: mois_noms[m - 1]))
+
+    rows = db.billing_summary(year, month)
+
+    if not rows:
+        st.info("Aucune intervention (non annulée) enregistrée pour ce mois.")
+        return
+
+    types = list(db.TYPES_INTERVENTION.keys())
+    records = []
+    for r in rows:
+        rec = {
+            "Prénom": r["prenom"],
+            "Nom": r["nom"],
+            "NISS": r["niss"],
+            "Commune": r["commune"],
+            "Mutuelle": r["mutuelle"],
+        }
+        for t in types:
+            rec[t] = r["types"].get(t, 0)
+        rec["Total"] = r["total"]
+        records.append(rec)
+
+    df = pd.DataFrame(records)
+    df = df[["Prénom", "Nom", "NISS", "Commune", "Mutuelle"] + types + ["Total"]]
+    st.dataframe(df, width="stretch", hide_index=True)
+
+    total_general = int(df["Total"].sum())
+    st.markdown(f"**Total du mois : {total_general} intervention(s) — {len(rows)} patient(s)**")
+
+    csv = df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "⬇️ Exporter en CSV (Excel)",
+        data=csv,
+        file_name=f"facturation_{year}_{month:02d}.csv",
+        mime="text/csv",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
 def main():
@@ -497,7 +593,7 @@ def main():
 
     page = st.sidebar.radio(
         "Navigation",
-        ["📊 Tableau de bord", "👥 Patients", "📅 Agenda", "🗺️ Localisation"],
+        ["📊 Tableau de bord", "👥 Patients", "📅 Agenda", "💶 Facturation", "🗺️ Localisation"],
     )
 
     st.sidebar.divider()
@@ -505,6 +601,27 @@ def main():
     st.sidebar.caption(
         "La Louvière · Châtelineau · Boussu · Hornu · Morlanwelz · Quaregnon"
     )
+    st.sidebar.divider()
+    st.sidebar.markdown("**💾 Sauvegarde**")
+    if st.sidebar.button("💾 Créer une sauvegarde", key="btn_backup"):
+        st.session_state["backup_path"] = db.backup()
+    bp = st.session_state.get("backup_path")
+    if bp and os.path.exists(bp):
+        with open(bp, "rb") as _f:
+            _data = _f.read()
+        st.sidebar.download_button(
+            "⬇️ Télécharger", data=_data,
+            file_name=os.path.basename(bp), mime="application/octet-stream",
+        )
+    uploaded = st.sidebar.file_uploader("♻️ Restaurer une sauvegarde", type=["db"], key="restore_up")
+    if uploaded is not None:
+        if st.sidebar.button("Confirmer la restauration", key="btn_restore"):
+            tmp = os.path.join(tempfile.gettempdir(), "restore_infirmiere.db")
+            with open(tmp, "wb") as _f:
+                _f.write(uploaded.getvalue())
+            db.restore(tmp)
+            st.sidebar.success("Base restaurée.")
+            st.rerun()
     st.sidebar.divider()
     st.sidebar.caption("© 2026 — Application de gestion de soins à domicile")
 
@@ -514,6 +631,8 @@ def main():
         page_patients()
     elif page.startswith("📅"):
         page_agenda()
+    elif page.startswith("💶"):
+        page_facturation()
     elif page.startswith("🗺️"):
         page_map()
 

@@ -1,12 +1,14 @@
 """
 Couche de persistance (SQLite) pour l'application de l'infirmière à domicile.
 
-Gère les patients et les interventions (soins, toilette, pansement, prise de sang).
+Gère les patients et les interventions (soins, toilette, pansement, prise de sang),
+ainsi que la facturation mensuelle et les sauvegardes.
 """
 
 import sqlite3
 import os
-from datetime import datetime
+import shutil
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 # Dossier de données (créé automatiquement)
@@ -46,6 +48,15 @@ def get_conn():
         conn.close()
 
 
+def _migrate(conn):
+    """Ajoute les colonnes manquantes sur une base existante (migration légère)."""
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(patients)")
+    cols = {row["name"] for row in cur.fetchall()}
+    if "niss" not in cols:
+        cur.execute("ALTER TABLE patients ADD COLUMN niss TEXT")
+
+
 def init_db():
     """Crée les tables si elles n'existent pas et insère des données d'exemple."""
     with get_conn() as conn:
@@ -58,6 +69,7 @@ def init_db():
                 prenom TEXT NOT NULL,
                 date_naissance TEXT,
                 sexe TEXT,
+                niss TEXT,
                 adresse TEXT,
                 cp TEXT,
                 commune TEXT,
@@ -89,6 +101,7 @@ def init_db():
             )
             """
         )
+        _migrate(conn)
         conn.commit()
 
     # Données d'exemple (une seule fois)
@@ -106,21 +119,24 @@ def _seed_if_empty():
         exemples = [
             {
                 "nom": "Dupont", "prenom": "Marie", "date_naissance": "1948-03-12",
-                "sexe": "F", "adresse": "12 rue des Tilleuls", "cp": "7100",
+                "sexe": "F", "niss": "48031201234",
+                "adresse": "12 rue des Tilleuls", "cp": "7100",
                 "commune": "La Louvière", "telephone": "0471 12 34 56",
                 "mutuelle": "Solidaris", "allergies": "Pénicilline",
                 "medicaments": "Metformine 500mg", "lat": 50.4766, "lng": 4.3340,
             },
             {
                 "nom": "Martin", "prenom": "Jean", "date_naissance": "1955-07-22",
-                "sexe": "H", "adresse": "8 avenue de la Station", "cp": "7100",
+                "sexe": "H", "niss": "55072204567",
+                "adresse": "8 avenue de la Station", "cp": "7100",
                 "commune": "La Louvière", "telephone": "0472 98 76 54",
                 "mutuelle": "CM", "allergies": "", "medicaments": "Amlodipine 5mg",
                 "lat": 50.4790, "lng": 4.3310,
             },
             {
                 "nom": "Lefevre", "prenom": "Sophie", "date_naissance": "1962-11-05",
-                "sexe": "F", "adresse": "3 place de l'Église", "cp": "7130",
+                "sexe": "F", "niss": "62110507890",
+                "adresse": "3 place de l'Église", "cp": "7130",
                 "commune": "Châtelineau", "telephone": "0475 55 44 33",
                 "mutuelle": "Solidaris", "allergies": "Latex",
                 "medicaments": "Levothyroxine 75µg", "lat": 50.4520, "lng": 4.3600,
@@ -129,10 +145,11 @@ def _seed_if_empty():
         for p in exemples:
             cur.execute(
                 """
-                INSERT INTO patients (nom, prenom, date_naissance, sexe, adresse, cp,
+                INSERT INTO patients (nom, prenom, date_naissance, sexe, niss, adresse, cp,
                     commune, telephone, email, mutuelle, allergies, medicaments, notes, lat, lng)
-                VALUES (:nom, :prenom, :date_naissance, :sexe, :adresse, :cp, :commune,
-                    :telephone, :email, :mutuelle, :allergies, :medicaments, :notes, :lat, :lng)
+                VALUES (:nom, :prenom, :date_naissance, :sexe, :niss, :adresse, :cp,
+                    :commune, :telephone, :email, :mutuelle, :allergies, :medicaments,
+                    :notes, :lat, :lng)
                 """,
                 {**p, "email": "", "notes": ""},
             )
@@ -186,9 +203,9 @@ def add_patient(data: dict):
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO patients (nom, prenom, date_naissance, sexe, adresse, cp, commune,
+            INSERT INTO patients (nom, prenom, date_naissance, sexe, niss, adresse, cp, commune,
                 telephone, email, mutuelle, allergies, medicaments, notes, lat, lng)
-            VALUES (:nom, :prenom, :date_naissance, :sexe, :adresse, :cp, :commune,
+            VALUES (:nom, :prenom, :date_naissance, :sexe, :niss, :adresse, :cp, :commune,
                 :telephone, :email, :mutuelle, :allergies, :medicaments, :notes, :lat, :lng)
             """,
             data,
@@ -197,7 +214,7 @@ def add_patient(data: dict):
 
 
 def update_patient(patient_id, data: dict):
-    fields = ["nom", "prenom", "date_naissance", "sexe", "adresse", "cp", "commune",
+    fields = ["nom", "prenom", "date_naissance", "sexe", "niss", "adresse", "cp", "commune",
               "telephone", "email", "mutuelle", "allergies", "medicaments", "notes", "lat", "lng"]
     data = {k: data.get(k) for k in fields}
     data["id"] = patient_id
@@ -270,19 +287,25 @@ def delete_intervention(intervention_id):
         conn.execute("DELETE FROM interventions WHERE id = ?", (intervention_id,))
 
 
+# ---------------------------------------------------------------------------
+# Statistiques & facturation
+# ---------------------------------------------------------------------------
+
 def stats():
-    """Statistiques globales pour le tableau de bord."""
+    """Statistiques pour le tableau de bord (chiffres du jour + répartition globale)."""
     with get_conn() as conn:
         total_patients = conn.execute("SELECT COUNT(*) AS n FROM patients").fetchone()["n"]
         today = datetime.now().strftime("%Y-%m-%d")
         du_jour = conn.execute(
             "SELECT COUNT(*) AS n FROM interventions WHERE date = ?", (today,)
         ).fetchone()["n"]
-        effectuees = conn.execute(
-            "SELECT COUNT(*) AS n FROM interventions WHERE statut = 'Effectué'"
+        effectuees_jour = conn.execute(
+            "SELECT COUNT(*) AS n FROM interventions WHERE date = ? AND statut = 'Effectué'",
+            (today,),
         ).fetchone()["n"]
-        planifiees = conn.execute(
-            "SELECT COUNT(*) AS n FROM interventions WHERE statut = 'Planifié'"
+        planifiees_jour = conn.execute(
+            "SELECT COUNT(*) AS n FROM interventions WHERE date = ? AND statut = 'Planifié'",
+            (today,),
         ).fetchone()["n"]
         par_type = conn.execute(
             "SELECT type, COUNT(*) AS n FROM interventions GROUP BY type ORDER BY n DESC"
@@ -290,7 +313,79 @@ def stats():
     return {
         "total_patients": total_patients,
         "du_jour": du_jour,
-        "effectuees": effectuees,
-        "planifiees": planifiees,
+        "effectuees_jour": effectuees_jour,
+        "planifiees_jour": planifiees_jour,
         "par_type": [dict(r) for r in par_type],
     }
+
+
+def billing_summary(year: int, month: int):
+    """Récapitulatif de facturation par patient pour un mois donné.
+
+    Comptabilise les interventions non annulées (Planifié + Effectué) du mois.
+    Retourne une liste de dicts : id, nom, prenom, niss, commune, mutuelle,
+    types (dict type -> nombre), total.
+    """
+    month_start = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        month_end = f"{year:04d}-12-31"
+    else:
+        next_first = datetime.fromisoformat(f"{year:04d}-{month + 1:02d}-01")
+        month_end = (next_first - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    types = list(TYPES_INTERVENTION.keys())
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.nom, p.prenom, p.niss, p.commune, p.mutuelle,
+                   i.type, COUNT(*) AS n
+            FROM interventions i
+            JOIN patients p ON p.id = i.patient_id
+            WHERE i.date >= ? AND i.date <= ? AND i.statut != 'Annulé'
+            GROUP BY p.id, i.type
+            ORDER BY p.nom, p.prenom
+            """,
+            (month_start, month_end),
+        ).fetchall()
+
+    from collections import OrderedDict
+    patients = OrderedDict()
+    for r in rows:
+        pid = r["id"]
+        if pid not in patients:
+            patients[pid] = {
+                "id": pid,
+                "nom": r["nom"],
+                "prenom": r["prenom"],
+                "niss": r["niss"] or "",
+                "commune": r["commune"] or "",
+                "mutuelle": r["mutuelle"] or "",
+                "types": {t: 0 for t in types},
+            }
+        if r["type"] in patients[pid]["types"]:
+            patients[pid]["types"][r["type"]] = r["n"]
+
+    result = []
+    for p in patients.values():
+        p["total"] = sum(p["types"].values())
+        result.append(p)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Sauvegarde / restauration
+# ---------------------------------------------------------------------------
+
+def backup():
+    """Copie la base de données dans un fichier horodaté. Retourne le chemin."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = os.path.join(DATA_DIR, f"infirmiere_backup_{stamp}.db")
+    shutil.copy2(DB_PATH, dest)
+    return dest
+
+
+def restore(src_path: str):
+    """Restaure la base de données depuis un fichier de sauvegarde."""
+    if not os.path.exists(src_path):
+        raise FileNotFoundError(src_path)
+    shutil.copy2(src_path, DB_PATH)
