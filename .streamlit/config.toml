@@ -1,12 +1,14 @@
 # Thème de l'application (appliqué automatiquement par `streamlit run app.py`).
-# Les finitions (cartes, boutons, cibles tactiles) sont dans `inject_mobile_css()` d'app.py.
+# Identité visuelle : « carnet d'agenda papier » — crème, rose poudré, mauve.
+# Les finitions (papier pointé, scotch washi, polices manuscrites, tactiles)
+# sont injectées par `inject_theme_css()` dans `app.py`.
 
 [theme]
 base = "light"
-primaryColor = "#2563eb"            # bleu (déjà utilisé par les badges et exports)
-backgroundColor = "#f8fafc"         # fond clair (slate-50)
-secondaryBackgroundColor = "#f1f5f9"  # fond des champs / panneaux (slate-100)
-textColor = "#0f172a"              # texte (slate-900)
+primaryColor = "#c15b8a"            # rose candy (boutons, liens, accents)
+backgroundColor = "#fdf6f1"         # papier crème
+secondaryBackgroundColor = "#fbeef2"  # rose poudré (champs / panneaux)
+textColor = "#4a3640"              # aubergine douce (lisible sur crème)
 font = "sans serif"
 
 [browser]

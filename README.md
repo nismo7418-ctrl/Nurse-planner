@@ -261,9 +261,13 @@ Le dossier de données du conteneur est surchargeable via la variable
 
 ## 📝 Notes
 
-- **Thème & design** : l'app utilise un thème clair moderne (bleu `#2563eb`), défini dans
-  `.streamlit/config.toml`, avec des finitions CSS (cartes de métriques, boutons arrondis,
-  cibles tactiles ≥ 48 px sur mobile) injectées par `app.py`.
+- **Thème & design** : identité « carnet d'agenda papier » — papier crème pointé et
+  grainé, rose poudré, titres manuscrits (Caveat) soulignés au feutre, spirale de
+  reliure sur la tranche, scotch washi sur les formulaires et post-its, badges-stickers
+  pastel, en-têtes de jour cerclés façon agenda (Aujourd'hui + vue Semaine) et icônes
+  rose/blanches. Couleurs de base dans `.streamlit/config.toml` et `manifest.json`,
+  finitions CSS (post-it de métriques, boutons pastille, cibles tactiles ≥ 48 px sur
+  mobile) injectées par `app.py`.
 - Les données sont stockées localement dans `data/infirmiere.db` (aucun serveur distant).
 - **RGPD** : les données de santé sont sensibles. Pensez à sauvegarder régulièrement
   (barre latérale) et à ne partager le fichier de base qu'avec précaution.

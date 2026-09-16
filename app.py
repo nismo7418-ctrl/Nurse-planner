@@ -39,7 +39,7 @@ st.set_page_config(
 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifest.json")):
     st.markdown(
         '<link rel="manifest" href="manifest.json">'
-        '<meta name="theme-color" content="#2563eb">',
+        '<meta name="theme-color" content="#fdf6f1">',
         unsafe_allow_html=True,
     )
 
@@ -52,14 +52,15 @@ db.init_db()
 if os.environ.get("NURSE_SEED_DEMO", "").strip().lower() in ("1", "true", "oui", "yes"):
     db.seed_demo_data()
 
-# Couleurs par type d'intervention
+# Couleurs par type d'intervention — palette pastel « carnet girly » :
+# chaque badge est un sticker doux (fond clair + texte foncé pour la lisibilité).
 TYPE_COLORS = {
-    "Soins": "#2563eb",
-    "Toilette": "#0891b2",
-    "Pansement": "#d97706",
-    "Prise de sang": "#dc2626",
-    "Injection": "#7c3aed",
-    "Surveillance": "#059669",
+    "Soins": ("#f7c9dc", "#8f3a61"),
+    "Toilette": ("#cfe6f6", "#2f6d9e"),
+    "Pansement": ("#f9e0c3", "#9a6420"),
+    "Prise de sang": ("#f5c2c2", "#a03535"),
+    "Injection": ("#e0d1f5", "#5c3d9e"),
+    "Surveillance": ("#cdecd7", "#2f7d4a"),
 }
 
 
@@ -78,10 +79,32 @@ def age_from_date(date_naissance):
 
 
 def intervention_badge(typ):
-    color = TYPE_COLORS.get(typ, "#6b7280")
+    """Badge-sticker pastel d'un type d'intervention (CSS : `.badge-sticker`)."""
+    bg, fg = TYPE_COLORS.get(typ, ("#f0dde5", "#7c5a68"))
+    return f"<span class='badge-sticker' style='background:{bg};color:{fg}'>{typ}</span>"
+
+
+def planner_date(jour: str, day: date, highlight: bool = False) -> str:
+    """En-tête de jour façon agenda papier : numéro du jour cerclé « à la main ».
+
+    `jour` reste le nom du jour en texte clair (conservé pour l'accessibilité
+    et les exports ; les tests vérifient aussi ce texte).
+    """
+    encre = "#c15b8a" if highlight else "#b98fa2"
+    note = (
+        " <span style='font-family:&quot;Caveat&quot;,cursive;font-size:1.25rem;"
+        "color:#c15b8a'>· aujourd'hui</span>" if highlight else ""
+    )
     return (
-        f"<span style='background:{color};color:white;padding:2px 10px;"
-        f"border-radius:12px;font-size:0.8rem;font-weight:600'>{typ}</span>"
+        "<div style='display:inline-flex;align-items:center;gap:14px;" +
+        "margin:0.45rem 0 0.35rem;'>"
+        f"<span style='display:inline-flex;align-items:center;justify-content:center;"
+        f"width:54px;height:54px;border:2.5px solid {encre};border-radius:49% 51% 48% 52% / 52% 48% 51% 49%;"
+        f"font-family:&quot;Caveat&quot;,cursive;font-size:1.9rem;font-weight:700;"
+        f"color:{encre};transform:rotate(-3deg);line-height:1'>{day.day}</span>"
+        f"<span style='font-family:&quot;Caveat&quot;,cursive;font-size:1.55rem;font-weight:700;"
+        f"color:{'#a44a72' if highlight else '#8a6b77'}'>{jour} "
+        f"{day.strftime('%d/%m/%Y')}</span>{note}</div>"
     )
 
 
@@ -469,8 +492,11 @@ def page_agenda():
         # Vue semaine : un bloc par jour, lundi → dimanche
         for d in dates:
             day = date.fromisoformat(d)
-            suffixe = " · aujourd'hui" if d == date.today().isoformat() else ""
-            st.markdown(f"**{JOURS_SEMAINE[day.weekday()]} {day.strftime('%d/%m/%Y')}**{suffixe}")
+            st.markdown(
+                planner_date(JOURS_SEMAINE[day.weekday()], day,
+                             highlight=(d == date.today().isoformat())),
+                unsafe_allow_html=True,
+            )
             rows = by_day[d]
             if rows:
                 st.dataframe(_interventions_df(rows), width="stretch", hide_index=True,
@@ -851,52 +877,217 @@ def _billing_pdf(year, month, records, types, total_general, n_patients):
 
 
 # ---------------------------------------------------------------------------
-# CSS global (thème moderne) + CSS mobile (touch-friendly, responsive)
-# Les couleurs de base sont aussi définies dans `.streamlit/config.toml` ;
-# ce bloc ajoute les finitions (cartes, boutons, arrondis, tactiles).
+# Thème visuel « carnet d'agenda papier » — girly & authentique :
+# papier crème pointé, rose poudré, titres manuscrits, scotch washi,
+# badges-stickers pastel + CSS mobile (cibles tactiles, responsive).
+# Les couleurs de base sont définies dans `.streamlit/config.toml`.
 # ---------------------------------------------------------------------------
-def inject_mobile_css():
+def inject_theme_css():
     st.markdown(
         """
+        <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
         <style>
-        /* ---------- Modernisation (toutes tailles) ---------- */
+        :root {
+            --rose: #c15b8a;
+            --rose-dark: #8f3a61;
+            --paper: #fdf6f1;
+            --creme: #fffaf6;
+            --encre: #4a3640;
+            --filet: #e5aec5;
+        }
         * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
             text-rendering: optimizeLegibility; }
 
-        .block-container { max-width: 1200px; }
+        html { background-color: var(--paper); }
+        .stApp { background-color: transparent; }
 
-        /* Boutons plus doux, retour visuel au survol / appui */
-        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-            border-radius: 10px;
-            transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+        /* ---------- Papier : fond crème avec pointillés d'agenda ---------- */
+        .block-container {
+            max-width: 1100px;
+            background-color: transparent;
+            background-image: radial-gradient(#e9c4d3 1.1px, transparent 1.2px);
+            background-size: 26px 26px;
         }
-        .stButton > button:hover { box-shadow: 0 2px 10px rgba(37, 99, 235, 0.18); }
+
+        /* ---------- Typographie manuscrite ---------- */
+        body, .stApp { font-family: 'Nunito', 'Segoe UI', sans-serif; color: var(--encre); }
+        h1, h2, h3 {
+            font-family: 'Caveat', 'Segoe Script', cursive;
+            color: #a44a72;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+        h1 { font-size: 2.7rem; line-height: 1.05; margin-bottom: 0.2rem; }
+        h2 { font-size: 2.1rem; line-height: 1.1; }
+        h3 { font-size: 1.6rem; }
+        h4 { font-size: 1.12rem; font-weight: 800; color: var(--encre); }
+        [data-testid="stCaptionContainer"] div, .stCaption {
+            color: #8a6b77 !important;
+            font-family: 'Nunito', sans-serif !important;
+            font-style: italic;
+        }
+        ::selection { background: #f4c2d4; color: var(--encre); }
+
+        /* ---------- Boutons : pastilles douces ---------- */
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+            font-family: 'Nunito', sans-serif;
+            font-weight: 700;
+            border-radius: 999px;
+            transition: box-shadow 0.15s ease, transform 0.05s ease;
+        }
+        .stButton > button:hover { box-shadow: 0 3px 14px rgba(193, 91, 138, 0.30); }
         .stButton > button:active, .stFormSubmitButton > button:active { transform: translateY(1px); }
 
-        /* Cartes de métriques du tableau de bord */
+        /* ---------- Métriques : post-it pastel ---------- */
         [data-testid="stMetric"] {
-            border: 1px solid rgba(37, 99, 235, 0.14);
-            border-radius: 14px;
-            background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), rgba(37, 99, 235, 0.01));
+            border: 1.5px dashed var(--filet);
+            border-radius: 16px;
+            background: linear-gradient(150deg, #fff9fb, #fdeef4);
             padding: 12px 16px;
+            box-shadow: 0 2px 10px rgba(164, 74, 114, 0.08);
         }
+        [data-testid="stMetricValue"] {
+            font-family: 'Caveat', cursive;
+            font-size: 2.15rem;
+            color: var(--rose-dark);
+            font-weight: 700;
+        }
+        [data-testid="stMetricLabel"] { color: #8a6b77; font-weight: 700; }
 
-        /* Formulaires, panneaux et tableaux plus modernes */
+        /* ---------- Formulaires : page de carnet + scotch washi ---------- */
         .stForm {
-            border-radius: 14px;
-            border: 1px solid #e2e8f0;
-            box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
+            position: relative;
+            border: 1px solid #eed4df;
+            border-radius: 18px;
+            background: var(--creme);
+            box-shadow: 0 2px 12px rgba(164, 74, 114, 0.07);
         }
-        [data-testid="stExpander"] section { border-radius: 12px; border-color: #e2e8f0; }
-        [data-testid="stDataFrame"] { border-radius: 12px; }
+        .stForm::after {
+            content: "";
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            width: 120px;
+            height: 28px;
+            transform: translateX(-50%) rotate(-2.5deg);
+            background: rgba(241, 182, 205, 0.55);
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(90, 40, 60, 0.12);
+            pointer-events: none;
+        }
 
-        /* Barre latérale légèrement teintée */
-        [data-testid="stSidebar"] { background: #f8fafc; }
+        /* ---------- Panneaux, dépliants, tableaux ---------- */
+        [data-testid="stExpander"] section {
+            border: 1px solid #eed4df;
+            border-radius: 14px;
+            background: var(--creme);
+        }
+        [data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; }
+        .stDivider, .block-container > hr { border-top: 2px dashed var(--filet) !important; }
 
-        /* Liens d'action plus tapables (toutes tailles) */
+        /* ---------- Barre latérale : tranche du carnet ---------- */
+        [data-testid="stSidebar"] {
+            background-color: #fbeef2;
+            background-image: radial-gradient(#e7b9cd 1px, transparent 1.1px);
+            background-size: 22px 22px;
+            border-right: 1.5px dashed #e5aec5;
+        }
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
+            font-family: 'Caveat', cursive;
+            color: #a44a72;
+        }
+        [data-testid="stSidebar"] p { color: #8a6b77; }
+
+        /* ---------- Messages : pastilles douces ---------- */
+        [data-testid="stAlert"] { border-radius: 14px; }
+        [data-testid="stSuccess"] { border-color: #bfe6cd; }
+
+        /* Liens plus tapables, style carnet */
         [data-testid="stMarkdownContainer"] a { text-decoration: none; }
 
-        /* ---------- Mobile-first : cibles tactiles + lisibilité ---------- */
+        /* ---------- Grain de papier (texture authentique) ---------- */
+        [data-testid="stAppViewContainer"]::after {
+            content: "";
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            pointer-events: none;
+            opacity: 0.04;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>");
+            background-size: 180px 180px;
+        }
+
+        /* ---------- Spirale de reliure sur la tranche du carnet ---------- */
+        [data-testid="stSidebar"] { position: relative; }
+        [data-testid="stSidebar"]::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            right: -9px;
+            width: 18px;
+            background-image: repeating-radial-gradient(circle at 50% 12px,
+                rgba(143, 58, 97, 0) 0 4px,
+                rgba(143, 58, 97, 0.5) 4px 6px,
+                rgba(143, 58, 97, 0) 6px 26px);
+            pointer-events: none;
+        }
+
+        /* ---------- Titre souligné au feutre rose ---------- */
+        h1 {
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='10' viewBox='0 0 120 10'><path d='M2 7 Q 16 1 31 7 T 61 7 T 91 7 T 118 7' fill='none' stroke='%23e5aec5' stroke-width='3.5' stroke-linecap='round'/></svg>");
+            background-repeat: no-repeat;
+            background-position: 0 100%;
+            background-size: 110px 10px;
+            padding-bottom: 12px;
+        }
+
+        /* ---------- Post-it : bandette de scotch washi ---------- */
+        [data-testid="stMetric"] { position: relative; }
+        [data-testid="stMetric"]::before {
+            content: "";
+            position: absolute;
+            top: -9px;
+            left: 18px;
+            width: 72px;
+            height: 18px;
+            transform: rotate(-3deg);
+            background: rgba(193, 91, 138, 0.26);
+            border-left: 2px dashed rgba(255, 255, 255, 0.65);
+            border-right: 2px dashed rgba(255, 255, 255, 0.65);
+            border-radius: 3px;
+            pointer-events: none;
+        }
+
+        /* ---------- Coin plié sur les formulaires (en haut à droite) ---------- */
+        .stForm::before {
+            content: "";
+            position: absolute;
+            top: -1px;
+            right: -1px;
+            width: 0;
+            height: 0;
+            border-top: 24px solid var(--paper);
+            border-left: 24px solid #f0c8d7;
+            pointer-events: none;
+        }
+
+        /* ---------- Badges-stickers des types de soins ---------- */
+        .badge-sticker {
+            font-family: 'Caveat', 'Segoe Script', cursive;
+            font-size: 1.05rem;
+            font-weight: 700;
+            line-height: 1.45;
+            padding: 0 12px 2px;
+            border-radius: 14px 18px 12px 17px;
+            border: 1.5px solid rgba(143, 58, 97, 0.22);
+            display: inline-block;
+            transform: rotate(-1.4deg);
+            box-shadow: 0 1px 3px rgba(90, 40, 60, 0.12);
+        }
+
+        /* ---------- Mobile : cibles tactiles + lisibilité ---------- */
         @media (max-width: 768px) {
             .block-container {
                 padding-top: 1.25rem;
@@ -905,32 +1096,23 @@ def inject_mobile_css():
                 padding-bottom: 3rem;
                 max-width: 100%;
             }
-            /* Empiler les colonnes pour une lecture verticale */
             .st-columns { flex-direction: column !important; row-gap: 0.5rem; }
             .st-columns > div { width: 100% !important; }
-            /* Gros boutons tactiles (>= 48px) */
             .stButton > button, .stFormSubmitButton > button {
                 min-height: 48px;
                 font-size: 1.05rem;
                 padding: 0.7rem 1rem;
-                border-radius: 12px;
             }
-            /* Titres compacts */
-            h1 { font-size: 1.55rem; }
-            h2 { font-size: 1.25rem; }
-            h3 { font-size: 1.1rem; }
-            h4 { font-size: 1.02rem; }
-            /* Champs de formulaire plus grands */
+            h1 { font-size: 2.0rem; }
+            h2 { font-size: 1.7rem; }
+            h3 { font-size: 1.35rem; }
             .stTextInput input, .stTextArea textarea, .stNumberInput input,
             .stDateInput input, .stTimeInput input {
                 font-size: 1rem;
                 min-height: 44px;
             }
-            /* Tableaux plus lisibles */
             [data-testid="stDataFrame"] { font-size: 0.95rem; }
-            /* Sidebar mobile quasi pleine largeur */
             [data-testid="stSidebar"] { min-width: 88vw; }
-            /* Badge d'intervention : plus grand sur mobile */
             [data-testid="stMarkdownContainer"] span {
                 font-size: 0.9rem !important;
                 padding: 4px 12px !important;
@@ -965,6 +1147,11 @@ def _action_links(tel: str, adresse: str):
 def page_today():
     st.title("📱 Aujourd'hui")
     st.caption("Vos visites du jour — appel, itinéraire et validation en un tap")
+
+    st.markdown(
+        planner_date(JOURS_SEMAINE[date.today().weekday()], date.today(), highlight=True),
+        unsafe_allow_html=True,
+    )
 
     today = date.today().isoformat()
     interventions = sorted(
@@ -1169,10 +1356,10 @@ def _require_auth() -> bool:
 def main():
     if not _require_auth():
         st.stop()
-    inject_mobile_css()
+    inject_theme_css()
 
-    st.sidebar.markdown("## 🩺 Infirmière à Domicile")
-    st.sidebar.caption(f"Wallonie — La Louvière · v{VERSION}")
+    st.sidebar.markdown("## 🌸 Mon carnet de soins")
+    st.sidebar.caption(f"Infirmière à domicile — La Louvière · v{VERSION}")
     st.sidebar.divider()
 
     page = st.sidebar.radio(
