@@ -1,0 +1,13 @@
+# Thème de l'application (appliqué automatiquement par `streamlit run app.py`).
+# Les finitions (cartes, boutons, cibles tactiles) sont dans `inject_mobile_css()` d'app.py.
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"            # bleu (déjà utilisé par les badges et exports)
+backgroundColor = "#f8fafc"         # fond clair (slate-50)
+secondaryBackgroundColor = "#f1f5f9"  # fond des champs / panneaux (slate-100)
+textColor = "#0f172a"              # texte (slate-900)
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

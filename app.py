@@ -21,7 +21,7 @@ import auth
 
 logger = logging.getLogger("nurse_planner.app")
 
-VERSION = "1.2.0"  # garder aligné avec pyproject.toml / README
+VERSION = "1.3.0"  # garder aligné avec pyproject.toml / README
 
 # ---------------------------------------------------------------------------
 # Configuration de la page
@@ -158,6 +158,8 @@ def _patient_form(existing=None, key_prefix="new"):
             "Date de naissance",
             value=datetime.strptime(existing["date_naissance"], "%Y-%m-%d").date()
             if existing and existing.get("date_naissance") else None,
+            max_value=date.today(),  # le sélecteur n'offre aucune date future
+            help="La date de naissance ne peut pas être dans le futur.",
         )
         sexe = c4.selectbox("Sexe", ["", "F", "H"],
                             index=["", "F", "H"].index(existing["sexe"]) if existing and existing.get("sexe") else 0)
@@ -193,22 +195,27 @@ def _patient_form(existing=None, key_prefix="new"):
         )
         if not submitted:
             return None
+
+        # Validation non bloquante : TOUTES les erreurs sont listées d'un coup
+        # (au lieu de bloquer sur la première et de forcer à resoumettre).
+        errors = []
         if not prenom.strip() or not nom.strip():
-            st.error("Le prénom et le nom sont obligatoires.")
-            return None
+            errors.append("Le prénom et le nom sont obligatoires.")
         if date_naissance and date_naissance > date.today():
-            st.error("La date de naissance ne peut pas être dans le futur.")
-            return None
+            errors.append("La date de naissance ne peut pas être dans le futur.")
         email_clean = email.strip()
         if email_clean and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_clean):
-            st.error(f"Adresse email invalide : {email_clean}")
-            return None
+            errors.append(f"Adresse email invalide : {email_clean}")
         tel_clean = telephone.strip()
         if tel_clean:
             tel_digits = re.sub(r"\D", "", tel_clean)
             if not (8 <= len(tel_digits) <= 13):
-                st.error("Numéro de téléphone invalide (8 à 13 chiffres attendus).")
-                return None
+                errors.append("Numéro de téléphone invalide (8 à 13 chiffres attendus).")
+        if errors:
+            for err in errors:
+                st.error(err)
+            return None
+
         niss_clean = niss.replace(" ", "")
         if niss_clean and not (niss_clean.isdigit() and len(niss_clean) == 11):
             st.warning("⚠️ Le NISS doit contenir 11 chiffres (vérifiez avant de facturer).")
@@ -354,10 +361,26 @@ def page_patients():
                             st.success("Patient mis à jour.")
                             st.rerun()
 
-                    if st.button("🗑️ Supprimer ce patient", key=f"del_{p['id']}"):
-                        db.delete_patient(p["id"])
-                        st.session_state.pop("selected_patient", None)
-                        st.success("Patient supprimé.")
+                    # Suppression avec confirmation (action irréversible)
+                    _confirm_del = f"confirm_del_patient_{p['id']}"
+                    if st.session_state.get(_confirm_del):
+                        st.warning(
+                            "⚠️ Cette action est **irréversible** : le patient et "
+                            "toutes ses interventions seront supprimés."
+                        )
+                        _c_yes, _c_no = st.columns(2)
+                        if _c_yes.button("✅ Confirmer la suppression", type="primary",
+                                        key=f"confirm_del_yes_{p['id']}", width="stretch"):
+                            db.delete_patient(p["id"])
+                            st.session_state.pop("selected_patient", None)
+                            st.session_state.pop(_confirm_del, None)
+                            st.success("Patient supprimé.")
+                            st.rerun()
+                        if _c_no.button("Annuler", key=f"confirm_del_no_{p['id']}", width="stretch"):
+                            st.session_state.pop(_confirm_del, None)
+                            st.rerun()
+                    elif st.button("🗑️ Supprimer ce patient", key=f"del_{p['id']}"):
+                        st.session_state[_confirm_del] = True
                         st.rerun()
             else:
                 st.info("Sélectionnez un patient à gauche, ou cliquez sur « ➕ Nouveau patient ».")
@@ -486,6 +509,32 @@ def page_agenda():
 
     # Gestion des statuts
     st.markdown("**🔄 Mettre à jour le statut**")
+
+    # Suppression d'une intervention : confirmation explicite (irréversible)
+    _pending_int = st.session_state.get("pending_int_delete")
+    if _pending_int is not None:
+        _intv = next((i for i in db.list_interventions() if i["id"] == _pending_int), None)
+        if _intv is None:
+            st.session_state.pop("pending_int_delete", None)
+        else:
+            st.warning("⚠️ Cette action est **irréversible** : l'intervention sera supprimée.")
+            st.markdown(
+                f"{intervention_badge(_intv['type'])}  **{_intv['date']}** · "
+                f"{_intv['heure'] or '—'} · {_intv['prenom']} {_intv['nom']}",
+                unsafe_allow_html=True,
+            )
+            _c_yes, _c_no = st.columns(2)
+            if _c_yes.button("✅ Confirmer la suppression", type="primary",
+                             key="int_del_yes", width="stretch"):
+                db.delete_intervention(_pending_int)
+                st.session_state.pop("pending_int_delete", None)
+                st.success("Intervention supprimée.")
+                st.rerun()
+            if _c_no.button("Annuler", key="int_del_no", width="stretch"):
+                st.session_state.pop("pending_int_delete", None)
+                st.rerun()
+            st.divider()
+
     if interventions:
         for row in interventions:
             c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
@@ -499,8 +548,9 @@ def page_agenda():
             if c3.button("❌", key=f"st_no_{row['id']}", help="Annuler"):
                 db.set_statut(row["id"], "Annulé")
                 st.rerun()
-            if c4.button("🗑️", key=f"st_del_{row['id']}", help="Supprimer"):
-                db.delete_intervention(row["id"])
+            if c4.button("🗑️", key=f"st_del_{row['id']}",
+                         help="Supprimer (une confirmation sera demandée)"):
+                st.session_state["pending_int_delete"] = row["id"]
                 st.rerun()
 
 
@@ -641,7 +691,9 @@ def page_facturation():
                  "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
     f1, f2 = st.columns([1, 1])
     with f1:
-        year = int(f1.number_input("Année", min_value=2020, max_value=2100, value=now.year, step=1))
+        year = int(f1.number_input("Année", min_value=1990, max_value=2100,
+                                  value=now.year, step=1,
+                                  help="Période facturée (1990 à 2100)."))
     with f2:
         month = int(f2.selectbox("Mois", list(range(1, 13)), index=now.month - 1,
                                  format_func=lambda m: mois_noms[m - 1]))
@@ -751,13 +803,52 @@ def _billing_pdf(year, month, records, types, total_general, n_patients):
 
 
 # ---------------------------------------------------------------------------
-# CSS mobile (touch-friendly, responsive) — injecté en tête de page
+# CSS global (thème moderne) + CSS mobile (touch-friendly, responsive)
+# Les couleurs de base sont aussi définies dans `.streamlit/config.toml` ;
+# ce bloc ajoute les finitions (cartes, boutons, arrondis, tactiles).
 # ---------------------------------------------------------------------------
 def inject_mobile_css():
     st.markdown(
         """
         <style>
-        /* --- Mobile-first : cibles tactiles + lisibilité --- */
+        /* ---------- Modernisation (toutes tailles) ---------- */
+        * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility; }
+
+        .block-container { max-width: 1200px; }
+
+        /* Boutons plus doux, retour visuel au survol / appui */
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+            border-radius: 10px;
+            transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+        }
+        .stButton > button:hover { box-shadow: 0 2px 10px rgba(37, 99, 235, 0.18); }
+        .stButton > button:active, .stFormSubmitButton > button:active { transform: translateY(1px); }
+
+        /* Cartes de métriques du tableau de bord */
+        [data-testid="stMetric"] {
+            border: 1px solid rgba(37, 99, 235, 0.14);
+            border-radius: 14px;
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), rgba(37, 99, 235, 0.01));
+            padding: 12px 16px;
+        }
+
+        /* Formulaires, panneaux et tableaux plus modernes */
+        .stForm {
+            border-radius: 14px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
+        }
+        [data-testid="stExpander"] section { border-radius: 12px; border-color: #e2e8f0; }
+        [data-testid="stDataFrame"] { border-radius: 12px; }
+
+        /* Barre latérale légèrement teintée */
+        [data-testid="stSidebar"] { background: #f8fafc; }
+
+        /* Liens d'action plus tapables (toutes tailles) */
+        [data-testid="stMarkdownContainer"] a { text-decoration: none; }
+
+        /* ---------- Mobile-first : cibles tactiles + lisibilité ---------- */
         @media (max-width: 768px) {
             .block-container {
                 padding-top: 1.25rem;
@@ -791,11 +882,7 @@ def inject_mobile_css():
             [data-testid="stDataFrame"] { font-size: 0.95rem; }
             /* Sidebar mobile quasi pleine largeur */
             [data-testid="stSidebar"] { min-width: 88vw; }
-        }
-        /* Liens d'action plus tapables (toutes tailles) */
-        [data-testid="stMarkdownContainer"] a { text-decoration: none; }
-        /* Badge d'intervention : plus grand sur mobile */
-        @media (max-width: 768px) {
+            /* Badge d'intervention : plus grand sur mobile */
             [data-testid="stMarkdownContainer"] span {
                 font-size: 0.9rem !important;
                 padding: 4px 12px !important;

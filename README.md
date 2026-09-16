@@ -10,15 +10,17 @@ injection, surveillance) et la **localisation** des patients sur une carte.
   avec **appel en 1 tap** (`tel:`), **itinéraire Google Maps** et gros boutons
   « ✅ Effectué » / « ❌ Annulé ». C'est l'écran principal sur le terrain.
 - **📊 Tableau de bord** — statistiques du jour, interventions du jour, actions rapides (Effectué / Annulé).
-- **👥 Patients** — ajout, recherche, modification, suppression ; coordonnées, **NISS**, mutuelle,
-  allergies, médicaments, notes ; historique des interventions. **Validation des saisies**
-  (date non future, email, téléphone 8–13 chiffres) et **export CSV** de la liste des patients.
+- **👥 Patients** — ajout, recherche, modification, suppression **avec confirmation** ;
+  coordonnées, **NISS**, mutuelle, allergies, médicaments, notes ; historique des
+  interventions. **Validation des saisies non bloquante** : toutes les erreurs sont
+  listées d'un coup (date non future, email, téléphone 8–13 chiffres) et **export CSV**
+  de la liste des patients.
 - **📅 Agenda** — planification des interventions par date, type et statut ; **récurrence hebdomadaire**
-  (répéter une visite sur N semaines) ; suivi du statut.
+  (répéter une visite sur N semaines) ; suivi du statut ; suppression **avec confirmation**.
 - **💶 Facturation** — récapitulatif mensuel des interventions par patient (par type),
-  avec NISS et mutuelle. **Option « Inclure les interventions planifiées »** (désactivée par
-  défaut : seules les visites « Effectué » sont comptées) et **export CSV/Excel + PDF**
-  prêt à envoyer / archiver.
+  avec NISS et mutuelle, sur la période **1990 à 2100**. **Option « Inclure les interventions
+  planifiées »** (désactivée par défaut : seules les visites « Effectué » sont comptées)
+  et **export CSV/Excel + PDF** prêt à envoyer / archiver.
 - **🗺️ Localisation** — carte interactive (Leaflet/OpenStreetMap) centrée sur La Louvière,
   avec géocodage automatique des adresses (Nominatim, sans clé API) et **cache des coordonnées**
   (pas de re-géocodage si déjà présentes, forçable via une case à cocher) ; patients à visiter
@@ -35,6 +37,7 @@ Nurse-planner/
 ├── database.py       # Couche de données (SQLite)
 ├── tests/            # Suite pytest (base temporaire, jamais la vraie DB)
 ├── manifest.json     # Manifeste PWA (installation sur l'écran d'accueil)
+├── .streamlit/config.toml  # Thème (couleurs, police) appliqué automatiquement
 ├── icons/            # Icônes de l'app (192/512 px + favicon)
 ├── requirements.txt  # Dépendances Python
 ├── pyproject.toml    # Métadonnées projet + configuration Ruff & pytest
@@ -192,6 +195,9 @@ Le dossier de données du conteneur est surchargeable via la variable
 
 ## 📝 Notes
 
+- **Thème & design** : l'app utilise un thème clair moderne (bleu `#2563eb`), défini dans
+  `.streamlit/config.toml`, avec des finitions CSS (cartes de métriques, boutons arrondis,
+  cibles tactiles ≥ 48 px sur mobile) injectées par `app.py`.
 - Les données sont stockées localement dans `data/infirmiere.db` (aucun serveur distant).
 - **RGPD** : les données de santé sont sensibles. Pensez à sauvegarder régulièrement
   (barre latérale) et à ne partager le fichier de base qu'avec précaution.
