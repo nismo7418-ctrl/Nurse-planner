@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import database as db_mod
+
 
 def db_path_join(db, name: str) -> Path:
     return Path(db.DATA_DIR) / name
@@ -17,6 +19,40 @@ def db_path_join(db, name: str) -> Path:
 
 def _today():
     return date.today().isoformat()
+
+
+class TestSeedDemoEtConsentement:
+    def test_init_db_base_vide_par_defaut(self, tmp_path, monkeypatch):
+        """RGPD : par défaut la base fraîche est VIDE (les données de démo sont opt-in)."""
+        monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "vide.db"))
+        monkeypatch.setattr(db_mod, "DATA_DIR", str(tmp_path))
+        db_mod.init_db()
+        assert db_mod.list_patients() == []
+        assert db_mod.list_interventions() == []
+        # seed_demo_data est explicite…
+        db_mod.seed_demo_data()
+        assert len(db_mod.list_patients()) == 3
+        assert len(db_mod.list_interventions()) == 3
+        # …et idempotente (un 2e appel ne duplique rien)
+        db_mod.seed_demo_data()
+        assert len(db_mod.list_patients()) == 3
+        assert len(db_mod.list_interventions()) == 3
+
+    def test_consent_date_valeur_par_defaut_et_roundtrip(self, fresh_db):
+        """RGPD art. 13-14 : consent_date par défaut vide, modifiable."""
+        db = fresh_db
+        pid = db.add_patient({
+            "nom": "Consent", "prenom": "Test", "date_naissance": "1960-01-01",
+            "sexe": "F", "niss": "", "adresse": "", "cp": "", "commune": "",
+            "telephone": "", "email": "", "mutuelle": "", "allergies": "",
+            "medicaments": "", "notes": "", "lat": None, "lng": None,
+        })
+        try:
+            assert db.get_patient(pid)["consent_date"] == ""
+            db.update_patient(pid, {"consent_date": "2026-01-15"})
+            assert db.get_patient(pid)["consent_date"] == "2026-01-15"
+        finally:
+            db.delete_patient(pid)
 
 
 class TestUpdatePatient:

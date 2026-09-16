@@ -20,6 +20,7 @@ PAGES = [
     "📅 Agenda",
     "💶 Facturation",
     "🗺️ Localisation",
+    "🔐 Confidentialité",
 ]
 
 

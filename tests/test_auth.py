@@ -33,6 +33,20 @@ class TestPasswordApi:
         assert not auth.verify_password("ancien1")
         assert auth.verify_password("nouveau2")
 
+    def test_verrouillage_apres_5_echecs(self, fresh_db):
+        """Anti brute-force : 5 tentatives échouées → verrouillage (même mot de passe correct)."""
+        assert fresh_db is not None  # fixture : base temporaire + isolation du mot de passe
+        auth._lock_reset()  # état propre (le compteur est partagé dans le processus)
+        try:
+            auth.set_password("secret42")
+            for _ in range(5):
+                assert not auth.verify_password("mauvais")
+            assert auth.lockout_remaining() > 0
+            # même le mot de passe correct est refusé pendant le verrouillage
+            assert not auth.verify_password("secret42")
+        finally:
+            auth._lock_reset()  # ne pas impacter les tests suivants
+
 
 class TestConnexionApp:
     def test_sans_mdp_l_app_est_accessible(self, fresh_db):

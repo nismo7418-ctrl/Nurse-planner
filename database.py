@@ -65,6 +65,8 @@ def _migrate(conn):
     cols = {row["name"] for row in cur.fetchall()}
     if "niss" not in cols:
         cur.execute("ALTER TABLE patients ADD COLUMN niss TEXT")
+    if "consent_date" not in cols:
+        cur.execute("ALTER TABLE patients ADD COLUMN consent_date TEXT")
 
 
 def init_db():
@@ -89,6 +91,7 @@ def init_db():
                 allergies TEXT,
                 medicaments TEXT,
                 notes TEXT,
+                consent_date TEXT,
                 lat REAL,
                 lng REAL,
                 created_at TEXT DEFAULT (datetime('now','localtime'))
@@ -114,11 +117,14 @@ def init_db():
         _migrate(conn)
         conn.commit()
 
-    # Données d'exemple (une seule fois)
-    _seed_if_empty()
 
+def seed_demo_data():
+    """Insère des patients/interventions d'exemple — UNIQUEMENT si la base est vide.
 
-def _seed_if_empty():
+    RGPD : par défaut l'application démarre avec une base **vide** ; les données
+    de démonstration (personnes fictives avec des données de santé) ne sont
+    chargées qu'explicitement via l'environnement ``NURSE_SEED_DEMO=1``.
+    """
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) AS n FROM patients")
@@ -210,13 +216,16 @@ def get_patient(patient_id):
 
 
 def add_patient(data: dict):
+    data = dict(data)
+    data.setdefault("consent_date", "")
     with get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO patients (nom, prenom, date_naissance, sexe, niss, adresse, cp, commune,
-                telephone, email, mutuelle, allergies, medicaments, notes, lat, lng)
+                telephone, email, mutuelle, allergies, medicaments, notes, consent_date, lat, lng)
             VALUES (:nom, :prenom, :date_naissance, :sexe, :niss, :adresse, :cp, :commune,
-                :telephone, :email, :mutuelle, :allergies, :medicaments, :notes, :lat, :lng)
+                :telephone, :email, :mutuelle, :allergies, :medicaments, :notes,
+                :consent_date, :lat, :lng)
             """,
             data,
         )
@@ -229,7 +238,8 @@ def update_patient(patient_id, data: dict):
     Exemple : update_patient(1, {"lat": 50.47, "lng": 4.33}) ne touche que lat/lng.
     """
     allowed = ["nom", "prenom", "date_naissance", "sexe", "niss", "adresse", "cp", "commune",
-               "telephone", "email", "mutuelle", "allergies", "medicaments", "notes", "lat", "lng"]
+               "telephone", "email", "mutuelle", "allergies", "medicaments", "notes",
+               "consent_date", "lat", "lng"]
     fields = [k for k in data if k in allowed]
     if not fields:
         return

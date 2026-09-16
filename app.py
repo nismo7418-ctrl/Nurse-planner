@@ -6,6 +6,7 @@ Lancement :
     streamlit run app.py
 """
 
+import html
 import logging
 import os
 import re
@@ -21,7 +22,7 @@ import auth
 
 logger = logging.getLogger("nurse_planner.app")
 
-VERSION = "1.3.0"  # garder aligné avec pyproject.toml / README
+VERSION = "1.4.0"  # garder aligné avec pyproject.toml / README
 
 # ---------------------------------------------------------------------------
 # Configuration de la page
@@ -44,6 +45,12 @@ if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mani
 
 # Initialisation de la base de données
 db.init_db()
+
+
+# RGPD : par défaut la base démarre VIDE. Les données de démonstration
+# (personnes fictives avec données de santé) ne sont chargées qu'explicitement.
+if os.environ.get("NURSE_SEED_DEMO", "").strip().lower() in ("1", "true", "oui", "yes"):
+    db.seed_demo_data()
 
 # Couleurs par type d'intervention
 TYPE_COLORS = {
@@ -183,6 +190,16 @@ def _patient_form(existing=None, key_prefix="new"):
             placeholder="11 chiffres — requis pour la facturation",
         )
 
+        st.markdown("**Traitements & consentement**")
+        consent_date = st.date_input(
+            "🔐 Consentement du patient (date d'information)",
+            value=datetime.strptime(existing["consent_date"], "%Y-%m-%d").date()
+            if existing and existing.get("consent_date") else None,
+            max_value=date.today(),
+            help="RGPD (art. 13-14) : date à laquelle le patient a été informé du "
+            "traitement de ses données et a consenti. Laissez vide si non documenté.",
+        )
+
         st.markdown("**Informations médicales**")
         allergies = st.text_area("Allergies", value=existing["allergies"] if existing else "")
         medicaments = st.text_area("Médicaments en cours",
@@ -235,6 +252,7 @@ def _patient_form(existing=None, key_prefix="new"):
             "allergies": allergies.strip(),
             "medicaments": medicaments.strip(),
             "notes": notes.strip(),
+            "consent_date": consent_date.isoformat() if consent_date else "",
             "lat": existing.get("lat") if existing else None,
             "lng": existing.get("lng") if existing else None,
         }
@@ -274,6 +292,7 @@ def page_patients():
                 "Email": p["email"], "Mutuelle": p["mutuelle"],
                 "Allergies": p["allergies"], "Médicaments": p["medicaments"],
                 "Notes": p["notes"],
+                "Consentement (date)": p.get("consent_date") or "",
             })
         _csv = pd.DataFrame(_recs).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
@@ -329,12 +348,17 @@ def page_patients():
                         st.markdown(f"**📧 Email**\n{p['email'] or '—'}")
                         st.markdown(f"**🏥 Mutuelle**\n{p['mutuelle'] or '—'}")
                         st.markdown(f"**🔢 NISS**\n{p['niss'] or '—'}")
+                        st.markdown(f"**🔐 Consentement (date d'information)**\n{p.get('consent_date') or '—'}")
 
                     # Actions rapides (mobile) : appel + itinéraire
                     _adresse = " ".join(filter(None, [p["adresse"], p["cp"], p["commune"]]))
                     _links = _action_links(p["telephone"], _adresse)
                     if _links:
                         st.markdown("   ·   ".join(_links), unsafe_allow_html=True)
+                        st.caption(
+                            "🔒 RGPD : ouvrir le lien « Itinéraire » transmet l'adresse "
+                            "à Google Maps (service tiers) à cet instant-là."
+                        )
 
                     st.markdown(f"**⚠️ Allergies** : {p['allergies'] or 'Aucune'}")
                     st.markdown(f"**💊 Médicaments** : {p['medicaments'] or 'Aucun'}")
@@ -574,6 +598,14 @@ def page_map():
     # Géocodage simple via Nominatim (OpenStreetMap) — optionnel, sans clé API
     st.markdown("**📍 Géocoder une adresse**")
     with st.form("geocode_form"):
+        consent_geo = st.checkbox(
+            "✅ J'autorise l'envoi de l'adresse du patient à Nominatim (OpenStreetMap) "
+            "pour la géocoder",
+            value=False,
+            key="geo_consent",
+            help="RGPD : l'adresse est transmise au service tiers Nominatim/OSM "
+            "uniquement si vous cochez cette case. Sans accord, rien n'est envoyé.",
+        )
         gc1, gc2 = st.columns([3, 1])
         patient = gc1.selectbox(
             "Patient",
@@ -585,7 +617,12 @@ def page_map():
             "Re-géocoder même si des coordonnées existent déjà",
             value=False, key="regeo_force",
         )
-        if submit:
+        if submit and not consent_geo:
+            st.warning(
+                "🔒 Géocodage non autorisé : cochez la case d'autorisation pour "
+                "envoyer l'adresse au service Nominatim (OpenStreetMap)."
+            )
+        elif submit:
             p = db.get_patient(patient["id"])
             if p.get("lat") and p.get("lng") and not force:
                 st.info(
@@ -628,13 +665,16 @@ def page_map():
             active = [i for i in interventions if i["statut"] != "Annulé"]
             # Vert si visite prévue aujourd'hui, gris sinon
             color = "green" if active else "gray"
+            # Échappement HTML : les champs proviennent de la base (XSS dans le popup)
+            def _esc(v):
+                return html.escape(str(v or ""))
             popup = (
-                f"<b>{p['prenom']} {p['nom']}</b><br>"
-                f"{p['adresse'] or ''} {p['cp'] or ''} {p['commune'] or ''}<br>"
-                f"📞 {p['telephone'] or '—'}"
+                f"<b>{_esc(p['prenom'])} {_esc(p['nom'])}</b><br>"
+                f"{_esc(p['adresse'])} {_esc(p['cp'])} {_esc(p['commune'])}<br>"
+                f"📞 {_esc(p['telephone']) or '—'}"
             )
             if active:
-                visits = " · ".join(f"{i['heure'] or ''} {i['type']}" for i in active)
+                visits = " · ".join(_esc(i["heure"]) + " " + _esc(i["type"]).strip() for i in active)
                 popup += f"<br>📅 Aujourd'hui : {visits}"
             folium.Marker(
                 location=[p["lat"], p["lng"]],
@@ -649,7 +689,13 @@ def page_map():
 
 
 def _geocode_and_save(patient_id: int, query: str):
-    """Géocode une adresse via Nominatim (OpenStreetMap) et enregistre les coordonnées."""
+    """Géocode une adresse via Nominatim (OpenStreetMap) et enregistre les coordonnées.
+
+    RGPD : l'adresse (donnée personnelle) ne quitte l'application que sur autorisation
+    expresse (case à cocher) vers Nominatim. Les journaux et messages d'erreur ne
+    contiennent **ni l'adresse ni le nom** — uniquement l'identifiant interne, car
+    l'exception réseau brute peut embarquer l'URL (donc l'adresse) en paramètre.
+    """
     try:
         import urllib.request
         import json
@@ -660,7 +706,7 @@ def _geocode_and_save(patient_id: int, query: str):
         })
         req = urllib.request.Request(
             f"{url}?{params}",
-            headers={"User-Agent": "InfirmiereADomicile/1.0 (application de gestion infirmiere, La Louviere BE)"},
+            headers={"User-Agent": "InfirmiereADomicile/1.4 (application de gestion infirmiere, La Louviere BE)"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
@@ -668,15 +714,17 @@ def _geocode_and_save(patient_id: int, query: str):
             lat = float(data[0]["lat"])
             lng = float(data[0]["lon"])
             db.update_patient(patient_id, {"lat": lat, "lng": lng})
-            logger.info("Géocodage OK (patient %s, « %s ») : %.5f, %.5f", patient_id, query, lat, lng)
+            logger.info("Géocodage OK (patient %s) : %.5f, %.5f", patient_id, lat, lng)
             st.success(f"Coordonnées trouvées : {lat:.5f}, {lng:.5f}")
             st.rerun()
         else:
-            logger.warning("Adresse introuvable lors du géocodage (patient %s, « %s »)", patient_id, query)
+            logger.warning("Adresse introuvable lors du géocodage (patient %s).", patient_id)
             st.warning("Adresse introuvable. Vérifiez l'adresse et la commune.")
     except Exception as e:
-        logger.exception("Erreur de géocodage (patient %s, « %s »)", patient_id, query)
-        st.error(f"Erreur de géocodage : {e}")
+        # RGPD : on ne journalise ni n'affiche l'exception brute (elle peut contenir
+        # l'URL, donc l'adresse du patient) : seul le type d'erreur est consigné.
+        logger.warning("Erreur de géocodage (patient %s) : %s", patient_id, type(e).__name__)
+        st.error("Erreur de géocodage (réseau ou service OpenStreetMap indisponible).")
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +999,10 @@ def page_today():
         links = _action_links(tel, adresse)
         if links:
             st.markdown("   ·   ".join(links), unsafe_allow_html=True)
+            st.caption(
+                "🔒 RGPD : ouvrir le lien « Itinéraire » transmet l'adresse "
+                "à Google Maps (service tiers) à cet instant-là."
+            )
 
         # Validation du statut
         if statut == "Planifié":
@@ -964,6 +1016,118 @@ def page_today():
         else:
             st.markdown(f"Statut : **{statut}**")
         st.divider()
+
+
+# ---------------------------------------------------------------------------
+# Page : Confidentialité (RGPD)
+# ---------------------------------------------------------------------------
+def page_privacy():
+    st.title("🔐 Confidentialité & RGPD")
+    st.caption(
+        "Comment vos données sont traitées, protégées et exploitées dans cette application"
+    )
+
+    st.markdown("### 🏛️ Responsable du traitement")
+    st.markdown(
+        "L'utilisation de cette application est le fait de **l'utilisatrice** "
+        "(l'infirmière à domicile) : elle est responsable du traitement des "
+        "données de ses patients dans le cadre de son activité "
+        "(RGPD, art. 4.7 — « responsable du traitement »)."
+    )
+
+    st.markdown("### 📋 Données traitées")
+    st.markdown(
+        "- **Identité** : prénom, nom, date de naissance, sexe\n"
+        "- **Coordonnées** : adresse, code postal, commune, téléphone, email, mutuelle\n"
+        "- **NISS** (n° de sécurité sociale, pour la facturation)\n"
+        "- **Données de santé** (art. 9 RGPD — catégorie *spéciale*) : allergies, "
+        "médicaments, notes cliniques, interventions\n"
+        "- **Coordonnées GPS** : uniquement si un géocodage a été autorisé\n"
+        "- **Consentement** : date d'information du patient (art. 13-14)"
+    )
+
+    st.markdown("### 🎯 Finalités du traitement")
+    st.markdown(
+        "Gestion de l'activité de soins à domicile : planification des "
+        "interventions, suivi des patients, facturation (NISS, mutuelle) et "
+        "localisation des visites. Aucune vente de données, aucun profilage, "
+        "**aucune télémétrie** (les statistiques d'usage Streamlit sont "
+        "désactivées — `gatherUsageStats=false`)."
+    )
+
+    st.markdown("### 🤝 Sous-traitants (services tiers)")
+    st.markdown(
+        "| Service | Quand | Données transmises |\n"
+        "|---|---|---|\n"
+        "| **Nominatim (OpenStreetMap)** | uniquement si vous cochez la case "
+        "d'autorisation dans « Localisation » | l'adresse à géocoder |\n"
+        "| **Google Maps** | uniquement au clic sur le lien « Itinéraire » | "
+        "l'adresse (dans l'URL du lien) |\n"
+        "| *Aucun autre* | — | le reste est **100 % local** (fichier SQLite sur "
+        "cet appareil) |"
+    )
+
+    st.markdown("### 🗄️ Durée de conservation (rétention)")
+    st.markdown(
+        "- Les données restent sur l'appareil tant que vous ne supprimez pas "
+        "le fichier `data/infirmiere.db` (suppression = droit à l'effacement).\n"
+        "- **5 sauvegardes** récentes maximum sont conservées automatiquement ; "
+        "les plus anciennes sont supprimées (pensez à les téléverser sur un "
+        "support externe si vous souhaitez les garder)."
+    )
+
+    st.markdown("### ✅ Vos droits (RGPD art. 15-21)")
+    st.markdown(
+        "- **Accès / portabilité** (art. 15, 20) : export CSV de la liste des "
+        "patients et de la facturation (boutons ⬇️ dans l'app).\n"
+        "- **Rectification** (art. 16) : formulaire « ✏️ Modifier le patient ».\n"
+        "- **Effacement** (art. 17) : « 🗑️ Supprimer ce patient » — confirmation "
+        "explicite requise, action irréversible."
+    )
+
+    st.markdown("### 🔒 Mesures de sécurité (art. 32)")
+    st.markdown(
+        "- Base **SQLite locale** : aucun serveur distant, aucune dépendance "
+        "obligatoire en ligne ;\n"
+        "- Mot de passe haché **PBKDF2-SHA256 — 600 000 itérations + sel** "
+        "(recommandation OWASP 2023), jamais stocké en clair ;\n"
+        "- **Verrouillage anti brute-force** : 5 tentatives échouées → 30 s de "
+        "blocage de connexion ;\n"
+        "- **Fuites de données limitées** : le fichier temporaire de restauration "
+        "est supprimé après usage, les journaux ne contiennent **ni nom, ni "
+        "adresse, ni téléphone** (seul l'identifiant interne est consigné), "
+        "les popups carte sont échappés contre le XSS ;\n"
+        "- **Docker** : utilisateur non-root, données isolées dans `/data` ;\n"
+        "- **HTTPS recommandé** pour tout accès distant (tunnel ou hébergement)."
+    )
+
+    st.markdown("### 🧪 Données de démonstration")
+    st.markdown(
+        "Par défaut, l'application démarre avec une base **vide** : les "
+        "patients d'exemple (personnes fictives avec des données de santé) ne "
+        "sont créés que si vous le demandez explicitement au lancement :\n\n"
+        "```bash\n"
+        "NURSE_SEED_DEMO=1 streamlit run app.py\n"
+        "```"
+    )
+
+    st.markdown("### ⚠️ Bonnes pratiques")
+    st.markdown(
+        "- Définissez un **mot de passe** (barre latérale) avant tout usage ;\n"
+        "- Sauvegardez régulièrement (barre latérale) et conservez les "
+        "sauvegardes en lieu sûr ;\n"
+        "- N'exposez pas l'application publiquement sans HTTPS et sans mot de "
+        "passe ;\n"
+        "- Les liens « Itinéraire » et le géocodage transmettent l'adresse à un "
+        "service tiers **au moment de l'action uniquement** — ne les utilisez "
+        "que si le patient en a été informé (art. 13-14)."
+    )
+
+    st.divider()
+    st.caption(
+        f"Infirmière à Domicile v{VERSION} — questions ou réclamations : "
+        "contactez la responsable du traitement (l'utilisatrice de l'app)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +1158,11 @@ def _require_auth() -> bool:
                 logger.info("Connexion réussie.")
                 st.rerun()
                 return True
-            st.error("Mot de passe incorrect.")
+            _msg = "Mot de passe incorrect."
+            _wait = auth.lockout_remaining()
+            if _wait > 0:
+                _msg += f" Plus de tentatives possibles pendant {_wait} s (verrouillage anti brute-force)."
+            st.error(_msg)
     return False
 
 
@@ -1010,7 +1178,7 @@ def main():
     page = st.sidebar.radio(
         "Navigation",
         ["📱 Aujourd'hui", "📊 Tableau de bord", "👥 Patients", "📅 Agenda",
-         "💶 Facturation", "🗺️ Localisation"],
+         "💶 Facturation", "🗺️ Localisation", "🔐 Confidentialité"],
     )
 
     st.sidebar.divider()
@@ -1035,10 +1203,20 @@ def main():
     if uploaded is not None:
         if st.sidebar.button("Confirmer la restauration", key="btn_restore"):
             tmp = os.path.join(tempfile.gettempdir(), "restore_infirmiere.db")
-            with open(tmp, "wb") as _f:
-                _f.write(uploaded.getvalue())
-            safety = db.backup()  # filet de sécurité avant tout écrasement
-            db.restore(tmp)
+            try:
+                with open(tmp, "wb") as _f:
+                    _f.write(uploaded.getvalue())
+                try:
+                    os.chmod(tmp, 0o600)  # accès restreint (meilleur effort)
+                except OSError:
+                    pass  # OS sans support chmod (rare sous Windows)
+                safety = db.backup()  # filet de sécurité avant tout écrasement
+                db.restore(tmp)
+            finally:
+                try:
+                    os.remove(tmp)  # RGPD : ne pas laisser les données patients en temp
+                except OSError:
+                    pass
             st.sidebar.success(
                 f"Base restaurée. Sauvegarde de sécurité : {os.path.basename(safety)}"
             )
@@ -1083,6 +1261,8 @@ def main():
         page_facturation()
     elif page.startswith("🗺️"):
         page_map()
+    elif page.startswith("🔐"):
+        page_privacy()
 
 
 if __name__ == "__main__":
