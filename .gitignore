@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# Environnement virtuel
+.venv/
+venv/
+
+# Base de données (données de santé — ne pas versionner)
+data/*.db
+data/infirmiere_backup_*.db
+
+# Artifacts Windows
+NUL
+Thumbs.db
+desktop.ini
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

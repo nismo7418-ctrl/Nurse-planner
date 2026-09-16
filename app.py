@@ -6,8 +6,11 @@ Lancement :
     streamlit run app.py
 """
 
+import logging
 import os
+import re
 import tempfile
+import urllib.parse
 
 import streamlit as st
 import pandas as pd
@@ -15,15 +18,26 @@ from datetime import date, datetime, timedelta
 
 import database as db
 
+logger = logging.getLogger("nurse_planner.app")
+
 # ---------------------------------------------------------------------------
 # Configuration de la page
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Infirmière à Domicile — La Louvière",
-    page_icon="🩺",
+    page_icon="icons/icon_32.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Manifeste PWA : permet « Ajouter à l'écran d'accueil » sur téléphone
+# (nécessite un accès en HTTPS pour l'installation, voir README).
+if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifest.json")):
+    st.markdown(
+        '<link rel="manifest" href="manifest.json">'
+        '<meta name="theme-color" content="#2563eb">',
+        unsafe_allow_html=True,
+    )
 
 # Initialisation de la base de données
 db.init_db()
@@ -53,24 +67,11 @@ def age_from_date(date_naissance):
         return ""
 
 
-def patient_label(p):
-    return f"{p['prenom']} {p['nom']}"
-
-
 def intervention_badge(typ):
     color = TYPE_COLORS.get(typ, "#6b7280")
     return (
         f"<span style='background:{color};color:white;padding:2px 10px;"
         f"border-radius:12px;font-size:0.8rem;font-weight:600'>{typ}</span>"
-    )
-
-
-def statut_badge(statut):
-    colors = {"Planifié": "#2563eb", "Effectué": "#059669", "Annulé": "#dc2626"}
-    color = colors.get(statut, "#6b7280")
-    return (
-        f"<span style='background:{color}22;color:{color};border:1px solid {color};"
-        f"padding:2px 10px;border-radius:12px;font-size:0.8rem;font-weight:600'>{statut}</span>"
     )
 
 
@@ -114,6 +115,10 @@ def page_dashboard():
                     label = f"{row['heure'] or '—'} · {row['prenom']} {row['nom']} · {row['type']}"
                     with col1:
                         st.markdown(label, unsafe_allow_html=True)
+                        _adresse = " ".join(filter(None, [row["adresse"], row["cp"], row["commune"]]))
+                        _links = _action_links(row["telephone"], _adresse)
+                        if _links:
+                            st.markdown("   ·   ".join(_links), unsafe_allow_html=True)
                     with col2:
                         if st.button("✅ Effectué", key=f"ok_{row['id']}"):
                             db.set_statut(row["id"], "Effectué")
@@ -188,6 +193,19 @@ def _patient_form(existing=None, key_prefix="new"):
         if not prenom.strip() or not nom.strip():
             st.error("Le prénom et le nom sont obligatoires.")
             return None
+        if date_naissance and date_naissance > date.today():
+            st.error("La date de naissance ne peut pas être dans le futur.")
+            return None
+        email_clean = email.strip()
+        if email_clean and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_clean):
+            st.error(f"Adresse email invalide : {email_clean}")
+            return None
+        tel_clean = telephone.strip()
+        if tel_clean:
+            tel_digits = re.sub(r"\D", "", tel_clean)
+            if not (8 <= len(tel_digits) <= 13):
+                st.error("Numéro de téléphone invalide (8 à 13 chiffres attendus).")
+                return None
         niss_clean = niss.replace(" ", "")
         if niss_clean and not (niss_clean.isdigit() and len(niss_clean) == 11):
             st.warning("⚠️ Le NISS doit contenir 11 chiffres (vérifiez avant de facturer).")
@@ -233,6 +251,25 @@ def page_patients():
         st.session_state["patient_new"] = True
         st.session_state.pop("selected_patient", None)
         st.rerun()
+
+    # Export CSV de la liste des patients
+    if patients:
+        _recs = []
+        for p in patients:
+            _recs.append({
+                "Nom": p["nom"], "Prénom": p["prenom"],
+                "Date de naissance": p["date_naissance"], "Sexe": p["sexe"],
+                "NISS": p["niss"], "Adresse": p["adresse"], "Code postal": p["cp"],
+                "Commune": p["commune"], "Téléphone": p["telephone"],
+                "Email": p["email"], "Mutuelle": p["mutuelle"],
+                "Allergies": p["allergies"], "Médicaments": p["medicaments"],
+                "Notes": p["notes"],
+            })
+        _csv = pd.DataFrame(_recs).to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Exporter la liste (CSV)", data=_csv,
+            file_name=f"patients_{date.today().isoformat()}.csv", mime="text/csv",
+        )
 
     left, right = st.columns([2, 3])
 
@@ -282,6 +319,12 @@ def page_patients():
                         st.markdown(f"**📧 Email**\n{p['email'] or '—'}")
                         st.markdown(f"**🏥 Mutuelle**\n{p['mutuelle'] or '—'}")
                         st.markdown(f"**🔢 NISS**\n{p['niss'] or '—'}")
+
+                    # Actions rapides (mobile) : appel + itinéraire
+                    _adresse = " ".join(filter(None, [p["adresse"], p["cp"], p["commune"]]))
+                    _links = _action_links(p["telephone"], _adresse)
+                    if _links:
+                        st.markdown("   ·   ".join(_links), unsafe_allow_html=True)
 
                     st.markdown(f"**⚠️ Allergies** : {p['allergies'] or 'Aucune'}")
                     st.markdown(f"**💊 Médicaments** : {p['medicaments'] or 'Aucun'}")
@@ -450,35 +493,23 @@ def page_map():
             format_func=lambda p: f"{p['prenom']} {p['nom']}",
         )
         submit = gc2.form_submit_button("🧭 Géocoder l'adresse")
+        force = st.checkbox(
+            "Re-géocoder même si des coordonnées existent déjà",
+            value=False, key="regeo_force",
+        )
         if submit:
             p = db.get_patient(patient["id"])
-            query = f"{p['adresse'] or ''} {p['cp'] or ''} {p['commune'] or ''} Belgique".strip()
-            if query:
-                try:
-                    import urllib.parse
-                    import urllib.request
-                    import json
-                    url = "https://nominatim.openstreetmap.org/search"
-                    params = urllib.parse.urlencode({
-                        "q": query, "format": "json", "limit": 1,
-                        "countrycodes": "be",
-                    })
-                    req = urllib.request.Request(
-                        f"{url}?{params}",
-                        headers={"User-Agent": "InfirmiereApp/1.0"},
-                    )
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        data = json.loads(resp.read().decode())
-                    if data:
-                        lat = float(data[0]["lat"])
-                        lng = float(data[0]["lon"])
-                        db.update_patient(p["id"], {"lat": lat, "lng": lng})
-                        st.success(f"Coordonnées trouvées : {lat:.5f}, {lng:.5f}")
-                        st.rerun()
-                    else:
-                        st.warning("Adresse introuvable. Vérifiez l'adresse et la commune.")
-                except Exception as e:
-                    st.error(f"Erreur de géocodage : {e}")
+            if p.get("lat") and p.get("lng") and not force:
+                st.info(
+                    f"Ce patient a déjà des coordonnées ({p['lat']:.5f}, {p['lng']:.5f}). "
+                    "Cochez « Re-géocoder » pour forcer une nouvelle recherche."
+                )
+            else:
+                query = f"{p['adresse'] or ''} {p['cp'] or ''} {p['commune'] or ''} Belgique".strip()
+                if not query:
+                    st.warning("Adresse du patient vide — impossible de géocoder.")
+                else:
+                    _geocode_and_save(p["id"], query)
 
     # Carte
     if with_coords:
@@ -529,6 +560,37 @@ def page_map():
         st.info("Géocodez au moins un patient pour afficher la carte.")
 
 
+def _geocode_and_save(patient_id: int, query: str):
+    """Géocode une adresse via Nominatim (OpenStreetMap) et enregistre les coordonnées."""
+    try:
+        import urllib.request
+        import json
+        url = "https://nominatim.openstreetmap.org/search"
+        params = urllib.parse.urlencode({
+            "q": query, "format": "json", "limit": 1,
+            "countrycodes": "be",
+        })
+        req = urllib.request.Request(
+            f"{url}?{params}",
+            headers={"User-Agent": "InfirmiereADomicile/1.0 (application de gestion infirmiere, La Louviere BE)"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        if data:
+            lat = float(data[0]["lat"])
+            lng = float(data[0]["lon"])
+            db.update_patient(patient_id, {"lat": lat, "lng": lng})
+            logger.info("Géocodage OK (patient %s, « %s ») : %.5f, %.5f", patient_id, query, lat, lng)
+            st.success(f"Coordonnées trouvées : {lat:.5f}, {lng:.5f}")
+            st.rerun()
+        else:
+            logger.warning("Adresse introuvable lors du géocodage (patient %s, « %s »)", patient_id, query)
+            st.warning("Adresse introuvable. Vérifiez l'adresse et la commune.")
+    except Exception as e:
+        logger.exception("Erreur de géocodage (patient %s, « %s »)", patient_id, query)
+        st.error(f"Erreur de géocodage : {e}")
+
+
 # ---------------------------------------------------------------------------
 # Page : Facturation (récapitulatif mensuel)
 # ---------------------------------------------------------------------------
@@ -546,10 +608,20 @@ def page_facturation():
         month = int(f2.selectbox("Mois", list(range(1, 13)), index=now.month - 1,
                                  format_func=lambda m: mois_noms[m - 1]))
 
-    rows = db.billing_summary(year, month)
+    include_planned = st.checkbox(
+        "Inclure les interventions planifiées (non encore réalisées)",
+        value=False,
+        help="Par défaut, seules les interventions « Effectué » sont comptabilisées. "
+             "Cochez pour inclure aussi celles encore « Planifié ».",
+    )
+
+    rows = db.billing_summary(year, month, include_planned=include_planned)
 
     if not rows:
-        st.info("Aucune intervention (non annulée) enregistrée pour ce mois.")
+        st.info(
+            "Aucune intervention effectuée enregistrée pour ce mois "
+            "(cochez « Inclure les interventions planifiées » pour élargir)."
+        )
         return
 
     types = list(db.TYPES_INTERVENTION.keys())
@@ -582,18 +654,207 @@ def page_facturation():
         mime="text/csv",
     )
 
+    # Export PDF (prêt à envoyer / archiver)
+    try:
+        pdf = _billing_pdf(year, month, records, types, total_general, len(rows))
+        st.download_button(
+            "🖨️ Télécharger le PDF",
+            data=pdf,
+            file_name=f"facturation_{year}_{month:02d}.pdf",
+            mime="application/pdf",
+        )
+    except ImportError:
+        st.warning(
+            "Le paquet `reportlab` est requis pour l'export PDF. "
+            "Installez-le avec : `pip install reportlab`"
+        )
+
+
+def _billing_pdf(year, month, records, types, total_general, n_patients):
+    """Génère un PDF A4 paysage du récapitulatif de facturation."""
+    import io
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    mois_noms = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                 "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        topMargin=1.5 * cm, bottomMargin=1.5 * cm,
+        leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+        title=f"Facturation {mois_noms[month - 1]} {year}",
+    )
+    styles = getSampleStyleSheet()
+    elements = [
+        Paragraph(f"Récapitulatif de facturation — {mois_noms[month - 1]} {year}", styles["Title"]),
+        Paragraph(
+            f"Infirmière à Domicile — La Louvière · {n_patients} patient(s) · "
+            f"{total_general} intervention(s) au total",
+            styles["Normal"],
+        ),
+        Spacer(1, 0.5 * cm),
+    ]
+    header = ["Prénom", "Nom", "NISS", "Commune", "Mutuelle"] + types + ["Total"]
+    data = [header] + [[rec[h] for h in header] for rec in records]
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563eb")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#eff6ff")]),
+    ]))
+    doc.build(elements + [table])
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# CSS mobile (touch-friendly, responsive) — injecté en tête de page
+# ---------------------------------------------------------------------------
+def inject_mobile_css():
+    st.markdown(
+        """
+        <style>
+        /* --- Mobile-first : cibles tactiles + lisibilité --- */
+        @media (max-width: 768px) {
+            .block-container {
+                padding-top: 1.25rem;
+                padding-left: 0.75rem;
+                padding-right: 0.75rem;
+                padding-bottom: 3rem;
+                max-width: 100%;
+            }
+            /* Empiler les colonnes pour une lecture verticale */
+            .st-columns { flex-direction: column !important; row-gap: 0.5rem; }
+            .st-columns > div { width: 100% !important; }
+            /* Gros boutons tactiles (>= 48px) */
+            .stButton > button, .stFormSubmitButton > button {
+                min-height: 48px;
+                font-size: 1.05rem;
+                padding: 0.7rem 1rem;
+                border-radius: 12px;
+            }
+            /* Titres compacts */
+            h1 { font-size: 1.55rem; }
+            h2 { font-size: 1.25rem; }
+            h3 { font-size: 1.1rem; }
+            h4 { font-size: 1.02rem; }
+            /* Champs de formulaire plus grands */
+            .stTextInput input, .stTextArea textarea, .stNumberInput input,
+            .stDateInput input, .stTimeInput input {
+                font-size: 1rem;
+                min-height: 44px;
+            }
+            /* Tableaux plus lisibles */
+            [data-testid="stDataFrame"] { font-size: 0.95rem; }
+            /* Sidebar mobile quasi pleine largeur */
+            [data-testid="stSidebar"] { min-width: 88vw; }
+        }
+        /* Liens d'action plus tapables (toutes tailles) */
+        [data-testid="stMarkdownContainer"] a { text-decoration: none; }
+        /* Badge d'intervention : plus grand sur mobile */
+        @media (max-width: 768px) {
+            [data-testid="stMarkdownContainer"] span {
+                font-size: 0.9rem !important;
+                padding: 4px 12px !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page : Aujourd'hui (vue mobile-first — l'écran principal sur le terrain)
+# ---------------------------------------------------------------------------
+def _maps_directions_url(adresse: str) -> str:
+    """Lien Google Maps « itinéraire » vers une adresse (Belgique)."""
+    q = urllib.parse.quote((adresse + " Belgique").strip())
+    return f"https://www.google.com/maps/dir/?api=1&destination={q}"
+
+
+def _action_links(tel: str, adresse: str):
+    """Renvoie la liste des liens d'action (appel + itinéraire) pour un patient."""
+    links = []
+    tel_clean = (tel or "").replace(" ", "").replace(".", "")
+    if tel_clean:
+        links.append(f"[📞 Appeler](tel:{tel_clean})")
+    if adresse:
+        links.append(f"[🧭 Itinéraire]({_maps_directions_url(adresse)})")
+    return links
+
+
+def page_today():
+    st.title("📱 Aujourd'hui")
+    st.caption("Vos visites du jour — appel, itinéraire et validation en un tap")
+
+    today = date.today().isoformat()
+    interventions = sorted(
+        db.list_interventions(date=today),
+        key=lambda i: (i["heure"] or "99:99"),
+    )
+    total = len(interventions)
+    done = sum(1 for i in interventions if i["statut"] == "Effectué")
+    if total:
+        st.progress(done / total, text=f"{done}/{total} interventions effectuées")
+
+    if not total:
+        st.success("Aucune intervention prévue aujourd'hui. 🎉")
+        return
+
+    for i in interventions:
+        name = f"{i['prenom']} {i['nom']}"
+        heure = i["heure"] or "—"
+        adresse = " ".join(filter(None, [i["adresse"], i["cp"], i["commune"]]))
+        tel = i["telephone"] or ""
+        statut = i["statut"]
+
+        # En-tête de la visite
+        st.markdown(f"#### {heure} — {name}")
+        st.markdown(intervention_badge(i["type"]), unsafe_allow_html=True)
+        if i["notes"]:
+            st.caption(f"📝 {i['notes']}")
+        if adresse:
+            st.markdown(f"📍 {adresse}")
+
+        # Actions rapides (mobile) : appel + itinéraire
+        links = _action_links(tel, adresse)
+        if links:
+            st.markdown("   ·   ".join(links), unsafe_allow_html=True)
+
+        # Validation du statut
+        if statut == "Planifié":
+            b1, b2 = st.columns(2)
+            if b1.button("✅ Effectué", key=f"today_ok_{i['id']}", type="primary", width="stretch"):
+                db.set_statut(i["id"], "Effectué")
+                st.rerun()
+            if b2.button("❌ Annulé", key=f"today_no_{i['id']}", width="stretch"):
+                db.set_statut(i["id"], "Annulé")
+                st.rerun()
+        else:
+            st.markdown(f"Statut : **{statut}**")
+        st.divider()
+
 
 # ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
 def main():
+    inject_mobile_css()
+
     st.sidebar.markdown("## 🩺 Infirmière à Domicile")
     st.sidebar.caption("Wallonie — La Louvière")
     st.sidebar.divider()
 
     page = st.sidebar.radio(
         "Navigation",
-        ["📊 Tableau de bord", "👥 Patients", "📅 Agenda", "💶 Facturation", "🗺️ Localisation"],
+        ["📱 Aujourd'hui", "📊 Tableau de bord", "👥 Patients", "📅 Agenda",
+         "💶 Facturation", "🗺️ Localisation"],
     )
 
     st.sidebar.divider()
@@ -605,6 +866,7 @@ def main():
     st.sidebar.markdown("**💾 Sauvegarde**")
     if st.sidebar.button("💾 Créer une sauvegarde", key="btn_backup"):
         st.session_state["backup_path"] = db.backup()
+        db.prune_backups(keep=5)  # rétention : ne garder que les 5 dernières
     bp = st.session_state.get("backup_path")
     if bp and os.path.exists(bp):
         with open(bp, "rb") as _f:
@@ -619,13 +881,18 @@ def main():
             tmp = os.path.join(tempfile.gettempdir(), "restore_infirmiere.db")
             with open(tmp, "wb") as _f:
                 _f.write(uploaded.getvalue())
+            safety = db.backup()  # filet de sécurité avant tout écrasement
             db.restore(tmp)
-            st.sidebar.success("Base restaurée.")
+            st.sidebar.success(
+                f"Base restaurée. Sauvegarde de sécurité : {os.path.basename(safety)}"
+            )
             st.rerun()
     st.sidebar.divider()
     st.sidebar.caption("© 2026 — Application de gestion de soins à domicile")
 
-    if page.startswith("📊"):
+    if page.startswith("📱"):
+        page_today()
+    elif page.startswith("📊"):
         page_dashboard()
     elif page.startswith("👥"):
         page_patients()

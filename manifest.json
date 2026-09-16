@@ -1,0 +1,26 @@
+{
+  "name": "Infirmière à Domicile — La Louvière",
+  "short_name": "Infirmière",
+  "description": "Gestion des patients, des soins et des visites à domicile — zone de La Louvière (Wallonie).",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "icons/icon_192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

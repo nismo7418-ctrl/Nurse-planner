@@ -5,11 +5,16 @@ Gère les patients et les interventions (soins, toilette, pansement, prise de sa
 ainsi que la facturation mensuelle et les sauvegardes.
 """
 
+import logging
 import sqlite3
 import os
-import shutil
+import re
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+
+logger = logging.getLogger("nurse_planner.database")
+if not logging.getLogger().handlers and not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
 # Dossier de données (créé automatiquement)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -38,6 +43,7 @@ def get_conn():
     """Ouvre une connexion SQLite avec un curseur et gère la transaction."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
@@ -214,9 +220,16 @@ def add_patient(data: dict):
 
 
 def update_patient(patient_id, data: dict):
-    fields = ["nom", "prenom", "date_naissance", "sexe", "niss", "adresse", "cp", "commune",
-              "telephone", "email", "mutuelle", "allergies", "medicaments", "notes", "lat", "lng"]
-    data = {k: data.get(k) for k in fields}
+    """Met à jour UNIQUEMENT les champs fournis (mise à jour partielle).
+
+    Exemple : update_patient(1, {"lat": 50.47, "lng": 4.33}) ne touche que lat/lng.
+    """
+    allowed = ["nom", "prenom", "date_naissance", "sexe", "niss", "adresse", "cp", "commune",
+               "telephone", "email", "mutuelle", "allergies", "medicaments", "notes", "lat", "lng"]
+    fields = [k for k in data if k in allowed]
+    if not fields:
+        return
+    data = {k: data[k] for k in fields}
     data["id"] = patient_id
     set_clause = ", ".join(f"{k} = :{k}" for k in fields)
     with get_conn() as conn:
@@ -269,8 +282,12 @@ def add_intervention(data: dict):
 
 
 def update_intervention(intervention_id, data: dict):
-    fields = ["patient_id", "type", "date", "heure", "duree_min", "statut", "lieu", "notes"]
-    data = {k: data.get(k) for k in fields}
+    """Met à jour UNIQUEMENT les champs fournis (mise à jour partielle)."""
+    allowed = ["patient_id", "type", "date", "heure", "duree_min", "statut", "lieu", "notes"]
+    fields = [k for k in data if k in allowed]
+    if not fields:
+        return
+    data = {k: data[k] for k in fields}
     data["id"] = intervention_id
     set_clause = ", ".join(f"{k} = :{k}" for k in fields)
     with get_conn() as conn:
@@ -319,10 +336,12 @@ def stats():
     }
 
 
-def billing_summary(year: int, month: int):
+def billing_summary(year: int, month: int, include_planned: bool = True):
     """Récapitulatif de facturation par patient pour un mois donné.
 
-    Comptabilise les interventions non annulées (Planifié + Effectué) du mois.
+    include_planned=True  : compte les interventions non annulées (Planifié + Effectué).
+    include_planned=False : ne compte que les interventions « Effectué »
+                            (recommandé pour la facturation mutuelle).
     Retourne une liste de dicts : id, nom, prenom, niss, commune, mutuelle,
     types (dict type -> nombre), total.
     """
@@ -334,14 +353,15 @@ def billing_summary(year: int, month: int):
         month_end = (next_first - timedelta(days=1)).strftime("%Y-%m-%d")
 
     types = list(TYPES_INTERVENTION.keys())
+    statut_clause = "i.statut != 'Annulé'" if include_planned else "i.statut = 'Effectué'"
     with get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT p.id, p.nom, p.prenom, p.niss, p.commune, p.mutuelle,
                    i.type, COUNT(*) AS n
             FROM interventions i
             JOIN patients p ON p.id = i.patient_id
-            WHERE i.date >= ? AND i.date <= ? AND i.statut != 'Annulé'
+            WHERE i.date >= ? AND i.date <= ? AND {statut_clause}
             GROUP BY p.id, i.type
             ORDER BY p.nom, p.prenom
             """,
@@ -377,15 +397,66 @@ def billing_summary(year: int, month: int):
 # ---------------------------------------------------------------------------
 
 def backup():
-    """Copie la base de données dans un fichier horodaté. Retourne le chemin."""
+    """Copie la base de données dans un fichier horodaté. Retourne le chemin.
+
+    Utilise l'API de sauvegarde en ligne de SQLite (sqlite3.Connection.backup),
+    qui produit une copie cohérente même si la base est ouverte/écrite ailleurs
+    (contrairement à une simple copie de fichier, fragile sous Windows).
+    """
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = os.path.join(DATA_DIR, f"infirmiere_backup_{stamp}.db")
-    shutil.copy2(DB_PATH, dest)
+    src = sqlite3.connect(DB_PATH)
+    try:
+        dst = sqlite3.connect(dest)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    logger.info("Sauvegarde créée : %s", dest)
     return dest
 
 
+def prune_backups(keep: int = 5) -> list:
+    """Supprime les plus anciennes sauvegardes, en ne gardant que `keep` fichiers récents.
+
+    Retourne la liste des chemins supprimés. Ignore les fichiers qui ne
+    correspondent pas au schéma de nommage des sauvegardes.
+    """
+    pattern = re.compile(r"^infirmiere_backup_\d{8}_\d{6}\.db$")
+    try:
+        files = [f for f in os.listdir(DATA_DIR) if pattern.match(f)]
+    except FileNotFoundError:
+        return []
+    files.sort()  # le nom est horodaté : le tri croissant = du plus ancien au plus récent
+    to_delete = files[:-keep] if keep < len(files) else []
+    removed = []
+    for f in to_delete:
+        path = os.path.join(DATA_DIR, f)
+        try:
+            os.remove(path)
+            removed.append(path)
+            logger.info("Ancienne sauvegarde supprimée : %s", path)
+        except OSError as exc:
+            logger.warning("Impossible de supprimer la sauvegarde %s : %s", path, exc)
+    return removed
+
+
 def restore(src_path: str):
-    """Restaure la base de données depuis un fichier de sauvegarde."""
+    """Restaure la base de données depuis un fichier de sauvegarde.
+
+    Utilise l'API de sauvegarde en ligne de SQLite pour une copie cohérente.
+    """
     if not os.path.exists(src_path):
         raise FileNotFoundError(src_path)
-    shutil.copy2(src_path, DB_PATH)
+    logger.info("Restauration depuis %s", src_path)
+    src = sqlite3.connect(src_path)
+    try:
+        dst = sqlite3.connect(DB_PATH)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
