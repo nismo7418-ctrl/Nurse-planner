@@ -111,6 +111,29 @@ def test_export_csv_patients(fresh_db):
     assert len(records) >= 1
 
 
+JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+
+
+def test_agenda_vue_semaine(fresh_db):
+    at = _open_page("📅 Agenda")
+    # Bascule en vue « Semaine »
+    for r in at.radio:
+        if any("Semaine" in (o or "") for o in r.options):
+            r.set_value("🗓️ Semaine")
+            break
+    else:
+        pytest.fail("bascule Liste/Semaine introuvable")
+    at.run()
+
+    assert not at.exception, "; ".join(str(e.value) for e in at.exception)
+    # Le jour du jour est présent dans les en-têtes de la vue semaine
+    today = date.today()
+    labels = " ".join(m.value for m in at.markdown)
+    assert JOURS[today.weekday()] in labels
+    # Les 3 interventions d'exemple (datées d'aujourd'hui) apparaissent dans un tableau
+    assert len(at.dataframe) >= 1
+
+
 def test_billing_pdf_retourne_un_pdf(fresh_db):
     app = importlib.import_module("app")
     now = date.today()

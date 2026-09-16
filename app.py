@@ -17,8 +17,11 @@ import pandas as pd
 from datetime import date, datetime, timedelta
 
 import database as db
+import auth
 
 logger = logging.getLogger("nurse_planner.app")
+
+VERSION = "1.2.0"  # garder aligné avec pyproject.toml / README
 
 # ---------------------------------------------------------------------------
 # Configuration de la page
@@ -363,6 +366,18 @@ def page_patients():
 # ---------------------------------------------------------------------------
 # Page : Agenda / Interventions
 # ---------------------------------------------------------------------------
+def _interventions_df(rows: list) -> pd.DataFrame:
+    """Tableau d'interventions au format affichage (liste et vue semaine)."""
+    df = pd.DataFrame(rows)
+    df = df[["heure", "prenom", "nom", "type", "statut", "lieu", "duree_min", "notes"]]
+    df.columns = ["Heure", "Prénom", "Nom", "Type", "Statut", "Lieu", "Durée (min)", "Notes"]
+    df["Patient"] = df.pop("Prénom") + " " + df.pop("Nom")
+    return df[["Heure", "Patient", "Type", "Statut", "Lieu", "Durée (min)", "Notes"]]
+
+
+JOURS_SEMAINE = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+
+
 def page_agenda():
     st.title("📅 Agenda des interventions")
     st.caption("Planifiez et suivez vos soins, toilettes, pansements et prises de sang")
@@ -372,29 +387,52 @@ def page_agenda():
         st.warning("Ajoutez d'abord un patient dans l'onglet **Patients**.")
         return
 
+    # Affichage : liste d'un jour ou vue semaine (7 jours)
+    vue = st.radio("Affichage", ["📋 Liste du jour", "🗓️ Semaine"],
+                   horizontal=True, label_visibility="collapsed")
+
     # Filtres
     f1, f2, f3 = st.columns(3)
     with f1:
-        date_filter = f1.date_input("Date", value=date.today())
+        if vue == "📋 Liste du jour":
+            anchor = f1.date_input("Date", value=date.today())
+            dates = [anchor.isoformat()]
+        else:
+            anchor = f1.date_input("Semaine du", value=date.today(),
+                                  help="Sélectionne le lundi de la semaine de la date choisie.")
+            monday = anchor - timedelta(days=anchor.weekday())
+            dates = [(monday + timedelta(days=i)).isoformat() for i in range(7)]
     with f2:
         type_filter = f2.selectbox("Type", ["Tous"] + list(db.TYPES_INTERVENTION.keys()))
     with f3:
         statut_filter = f3.selectbox("Statut", ["Tous"] + list(db.STATUTS.keys()))
 
-    interventions = db.list_interventions(date=date_filter.isoformat())
+    date_set = set(dates)
+    interventions = [i for i in db.list_interventions() if i["date"] in date_set]
     if type_filter != "Tous":
         interventions = [i for i in interventions if i["type"] == type_filter]
     if statut_filter != "Tous":
         interventions = [i for i in interventions if i["statut"] == statut_filter]
 
-    # Tableau
-    if interventions:
-        df = pd.DataFrame(interventions)
-        df = df[["heure", "prenom", "nom", "type", "statut", "lieu", "duree_min", "notes"]]
-        df.columns = ["Heure", "Prénom", "Nom", "Type", "Statut", "Lieu", "Durée (min)", "Notes"]
-        df["Patient"] = df.pop("Prénom") + " " + df.pop("Nom")
-        df = df[["Heure", "Patient", "Type", "Statut", "Lieu", "Durée (min)", "Notes"]]
-        st.dataframe(df, width="stretch", hide_index=True)
+    by_day = {d: [] for d in dates}
+    for i in interventions:
+        by_day[i["date"]].append(i)
+
+    if vue == "🗓️ Semaine":
+        # Vue semaine : un bloc par jour, lundi → dimanche
+        for d in dates:
+            day = date.fromisoformat(d)
+            suffixe = " · aujourd'hui" if d == date.today().isoformat() else ""
+            st.markdown(f"**{JOURS_SEMAINE[day.weekday()]} {day.strftime('%d/%m/%Y')}**{suffixe}")
+            rows = by_day[d]
+            if rows:
+                st.dataframe(_interventions_df(rows), width="stretch", hide_index=True,
+                             height=min(120 + 35 * len(rows), 400))
+            else:
+                st.write("")
+                st.caption("Aucune intervention")
+    elif interventions:
+        st.dataframe(_interventions_df(interventions), width="stretch", hide_index=True)
     else:
         st.info("Aucune intervention pour ces critères.")
 
@@ -844,11 +882,42 @@ def page_today():
 # ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
+def _require_auth() -> bool:
+    """Porte d'entrée : écran de connexion si un mot de passe est défini.
+
+    - Aucun mot de passe défini → l'app reste accessible (mode local simple).
+    - Mot de passe défini → connexion requise avant d'afficher l'app.
+
+    Renvoie ``True`` si l'app est autorisée à continuer ; sinon ``main()``
+    s'arrête juste après l'écran de connexion (``st.stop()``), de sorte que
+    ni la navigation ni les données ne sont rendues.
+    """
+    if not auth.password_is_set():
+        return True
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("🔒 Connexion")
+    st.caption("Infirmière à Domicile — Wallonie (La Louvière)")
+    with st.form("login_form"):
+        pwd = st.text_input("Mot de passe", type="password")
+        if st.form_submit_button("Se connecter", type="primary", width="stretch"):
+            if auth.verify_password(pwd):
+                st.session_state["authenticated"] = True
+                logger.info("Connexion réussie.")
+                st.rerun()
+                return True
+            st.error("Mot de passe incorrect.")
+    return False
+
+
 def main():
+    if not _require_auth():
+        st.stop()
     inject_mobile_css()
 
     st.sidebar.markdown("## 🩺 Infirmière à Domicile")
-    st.sidebar.caption("Wallonie — La Louvière")
+    st.sidebar.caption(f"Wallonie — La Louvière · v{VERSION}")
     st.sidebar.divider()
 
     page = st.sidebar.radio(
@@ -887,6 +956,31 @@ def main():
                 f"Base restaurée. Sauvegarde de sécurité : {os.path.basename(safety)}"
             )
             st.rerun()
+    st.sidebar.divider()
+    if st.sidebar.button("🔓 Se déconnecter", key="btn_logout", use_container_width=True):
+        st.session_state.pop("authenticated", None)
+        st.rerun()
+    if auth.password_is_set():
+        st.sidebar.caption("🔒 Session protégée par mot de passe.")
+    else:
+        st.sidebar.caption(
+            "⚠️ Aucun mot de passe défini : l'application est accessible à quiconque peut "
+            "ouvrir le port 8501. Définissez-en un ci-dessous pour la protéger."
+        )
+        with st.sidebar.expander("🔑 Définir un mot de passe"):
+            with st.form("setup_pwd_form"):
+                p1 = st.text_input("Nouveau mot de passe (min. 4 caractères)", type="password")
+                p2 = st.text_input("Confirmer", type="password")
+                if st.form_submit_button("Définir le mot de passe", width="stretch"):
+                    if p1 != p2:
+                        st.error("Les deux mots de passe ne correspondent pas.")
+                    elif len(p1) < 4:
+                        st.error("Le mot de passe doit contenir au moins 4 caractères.")
+                    else:
+                        auth.set_password(p1)
+                        st.session_state.pop("authenticated", None)
+                        st.success("Mot de passe défini.")
+                        st.rerun()
     st.sidebar.divider()
     st.sidebar.caption("© 2026 — Application de gestion de soins à domicile")
 

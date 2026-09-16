@@ -31,12 +31,15 @@ injection, surveillance) et la **localisation** des patients sur une carte.
 ```
 Nurse-planner/
 ├── app.py            # Application Streamlit (interface)
+├── auth.py           # Authentification locale (PBKDF2, sans dépendance externe)
 ├── database.py       # Couche de données (SQLite)
 ├── tests/            # Suite pytest (base temporaire, jamais la vraie DB)
 ├── manifest.json     # Manifeste PWA (installation sur l'écran d'accueil)
 ├── icons/            # Icônes de l'app (192/512 px + favicon)
 ├── requirements.txt  # Dépendances Python
 ├── pyproject.toml    # Métadonnées projet + configuration Ruff & pytest
+├── Dockerfile        # Image Docker (non-root, healthcheck, /data)
+├── .dockerignore
 ├── .editorconfig     # Convention d'indentation / encodage
 ├── .github/workflows/ci.yml  # CI : lint + tests
 ├── .gitignore        # Exclut __pycache__ et la base de données du dépôt
@@ -152,6 +155,40 @@ Options pour obtenir du HTTPS :
 
 - **Logging** : `app.py` et `database.py` journalisent les événements critiques
   (sauvegardes, restauration, géocodage, erreurs) via le module standard `logging`.
+
+## 🔒 Sécurité & mot de passe
+
+- La première fois que l'app démarre, aucun mot de passe n'est défini : un avertissement
+  apparaît dans la barre latérale avec un formulaire « **Définir un mot de passe** ».
+- Une fois défini, chaque session (même navigateur) demande le mot de passe avant
+  d'afficher l'application ; **« 🔓 Se déconnecter »** ferme la session.
+- Le mot de passe est stocké **en local**, haché (PBKDF2-SHA256 + sel) dans
+  `data/password.json` — jamais en clair, jamais versionné.
+- Pour réinitialiser : supprimez `data/password.json` (ou demandez une réinitialisation
+  locale — l'app n'expose pas de fonction « mot de passe oublié » par conception
+  d'application locale).
+
+> 💡 Le mot de passe protège l'interface, pas le fichier de base : conservez également
+> les sauvegardes et `data/` en lieu sûr, et utilisez un tunnel HTTPS (voir plus haut)
+> si vous accédez à l'app depuis le réseau.
+
+## 🐳 Docker
+
+Image officielle fournie (`Dockerfile`) : utilisateur non-root, santé du service vérifiée
+automatiquement, données isolées dans `/data`.
+
+```bash
+# Construire l'image
+docker build -t nurse-planner .
+
+# Lancer avec une base persistée (volume)
+docker run -d --name nurse-planner -p 8501:8501 -v nurse_data:/data nurse-planner
+
+# Ouvrir http://localhost:8501
+```
+
+Le dossier de données du conteneur est surchargeable via la variable
+`NURSE_DATA_DIR` (défaut `/data`).
 
 ## 📝 Notes
 

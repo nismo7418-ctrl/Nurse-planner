@@ -16,8 +16,12 @@ logger = logging.getLogger("nurse_planner.database")
 if not logging.getLogger().handlers and not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-# Dossier de données (créé automatiquement)
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+# Dossier de données (créé automatiquement).
+# Surchargeable via NURSE_DATA_DIR (ex. /data dans le conteneur Docker).
+DATA_DIR = os.environ.get(
+    "NURSE_DATA_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
+)
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "infirmiere.db")
 
